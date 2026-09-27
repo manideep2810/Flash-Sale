@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:17          # pin exact minor
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: flashsale
+    ports: ["5434:5434"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 5s
+
+  redis:
+    image: redis:7.4            # or valkey/valkey:8
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports: ["6380:6380"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+
+  redpanda:                     # Kafka-API compatible, single binary, light on RAM
+    image: docker.redpanda.com/redpandadata/redpanda:latest   # pin a version
+    command:
+      - redpanda start
+      - --mode dev-container
+      - --smp 1
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+    ports: ["19092:19092"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+
+  jaeger:
+    image: jaegertracing/jaeger:latest   # pin a version
+    ports:
+      - "16686:16686"   # UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP

@@ -1,0 +1,90 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+# A newer push to the same branch/PR cancels the run it supersedes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, typecheck & unit tests
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # No `version` input: the action reads the pinned version from package.json "packageManager"
+      # and fails if both are set and disagree.
+      - name: Install pnpm (version pinned in package.json)
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js 24 with pnpm store cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint and format check (Biome)
+        run: pnpm -r run lint
+
+      - name: Typecheck all workspaces
+        run: pnpm -r run typecheck
+
+      - name: Run unit tests
+        run: pnpm -r run test
+
+  integration-tests:
+    name: Integration tests (optional in Phase 0)
+    needs: check
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    # Phase 0: a failure here is reported but never fails the workflow.
+    continue-on-error: true
+    env:
+      COMPOSE_FILE: infra/docker/docker-compose.yml
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm (version pinned in package.json)
+        uses: pnpm/action-setup@v4
+
+      - name: Set up Node.js 24 with pnpm store cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Start infrastructure (postgres, redis, redpanda, jaeger) and wait until healthy
+        run: docker compose -f "$COMPOSE_FILE" up -d --wait --wait-timeout 180
+
+      # Only skips when no workspace defines the script; once one does, its failures are real.
+      - name: Run integration tests
+        run: |
+          if grep -q '"test:integration"' packages/*/package.json services/*/package.json; then
+            pnpm -r run --if-present test:integration
+          else
+            echo "Integration tests not yet available"
+          fi
+
+      - name: Dump container logs
+        if: failure()
+        run: docker compose -f "$COMPOSE_FILE" logs --no-color --tail=200
+
+      - name: Stop infrastructure and remove volumes
+        if: always()
+        run: docker compose -f "$COMPOSE_FILE" down -v

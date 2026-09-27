@@ -1,0 +1,29 @@
+packages:
+  - packages/*
+  - services/*
+
+# Single source of truth for third-party versions; workspaces reference them as "catalog:".
+catalog:
+  "@biomejs/biome": 2.5.14
+  "@prisma/client": ^7.10.0
+  "@types/express": ^5.0.6
+  "@types/node": ^24.0.0
+  express: ^5.2.1
+  ioredis: ^6.0.0
+  kafkajs: ^2.2.4
+  prisma: ^7.10.0
+  tsx: ^4.21.0
+  typescript: ^7.0.2
+  vite: ^8.3.1
+  vitest: ^5.0.2
+  winston: ^3.19.0
+  zod: ^4.6.5
+
+# pnpm refuses to install when an unreviewed dependency wants to run a build script.
+allowBuilds:
+  "@prisma/engines": true
+  esbuild: true
+  prisma: true
+
+# Run package.json scripts through pnpm's bash-like shell so `PORT=3001 cmd` also works on Windows.
+shellEmulator: true

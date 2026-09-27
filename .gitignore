@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Prisma client output (regenerate with `pnpm -r run db:generate`)
+services/*/src/generated/
+
+.env
+.env.*
+!.env.example
+
+.DS_Store

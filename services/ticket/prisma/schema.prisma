@@ -1,0 +1,10 @@
+// Models for the ticket service's own database. Add models, then run `prisma migrate dev`.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}

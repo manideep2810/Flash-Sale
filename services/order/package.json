@@ -1,0 +1,32 @@
+{
+  "name": "@flash/order",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "PORT=3003 tsx watch src/index.ts",
+    "lint": "biome check --config-path=../../.biomerc.json .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "node dist/index.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy"
+  },
+  "dependencies": {
+    "@flash/config": "workspace:*",
+    "@flash/kafka": "workspace:*",
+    "@flash/observability": "workspace:*",
+    "@prisma/client": "catalog:",
+    "express": "catalog:"
+  },
+  "devDependencies": {
+    "@types/express": "catalog:",
+    "@types/node": "catalog:",
+    "prisma": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}
