@@ -5,17 +5,18 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "dev": "PORT=3005 tsx watch src/index.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
+    "start": "node --env-file-if-exists=.env dist/index.js",
     "lint": "biome check --config-path=../../.biomerc.json .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "start": "node dist/index.js"
+    "test": "vitest run"
   },
   "dependencies": {
     "@flash/config": "workspace:*",
     "@flash/observability": "workspace:*",
     "express": "catalog:",
-    "ioredis": "catalog:"
+    "ioredis": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/express": "catalog:",

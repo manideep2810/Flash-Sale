@@ -1,8 +1,8 @@
-import { baseEnvSchema, loadEnv } from "@flash/config";
 import { createLogger } from "@flash/observability";
-import { SERVICE_NAME, startServer } from "./server.js";
+import { config } from "./config.js";
+import { startServer } from "./server.js";
 
-const env = loadEnv(baseEnvSchema);
-const logger = createLogger({ service: SERVICE_NAME, level: env.LOG_LEVEL });
+const logger = createLogger({ service: config.SERVICE_NAME, level: config.LOG_LEVEL });
 
-startServer({ port: env.PORT, logger });
+// Pass `closeClients` here once Redis/Kafka/Prisma clients exist so SIGTERM disconnects them.
+startServer({ port: config.PORT, logger });

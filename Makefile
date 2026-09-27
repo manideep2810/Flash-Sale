@@ -35,7 +35,7 @@ KAFKA_REPLICAS   ?= 1
 PNPM ?= pnpm
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps shell-db shell-redis topics migrate seed test test-watch lint typecheck check dev clean
+.PHONY: help up down logs ps shell-db shell-redis topics migrate seed test test-watch lint typecheck check env dev clean
 
 help: ## List available targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -90,7 +90,17 @@ typecheck: ## Typecheck every workspace
 check: ## Biome over the whole repo (root files included), then typecheck every workspace
 	$(PNPM) run check
 
-dev: ## Run all services in watch mode (ticket :3001, relay :3002, order :3003, payment-mock :3004, queue :3005)
+env: ## Create each services/<name>/.env from its .env.example (never overwrites an existing .env)
+	@for example in services/*/.env.example; do \
+		target="$${example%.example}"; \
+		if [ -f "$$target" ]; then \
+			echo "kept     $$target"; \
+		else \
+			cp "$$example" "$$target" && echo "created  $$target"; \
+		fi; \
+	done
+
+dev: ## Run all services in watch mode (needs services/<name>/.env - run `make env` once)
 	$(PNPM) -r --parallel --filter "./services/*" run dev
 
 clean: ## Delete node_modules, dist and .env files everywhere, plus the stack's containers and volumes

@@ -1,0 +1,109 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Flash Sale HLD</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg:#F4F6F8; --surface:#FFFFFF; --fg:#18202C; --muted:#5A6576; --line:#C7CED8;
+  --hot:#0B7A83; --async:#4B5566; --fail:#C2410C;
+  --ok-bg:#E3F4EA; --ok-fg:#146C3A; --bad-bg:#FCEBE2; --bad-fg:#9A3412; --mid-bg:#E6F2F3;
+  --redis:#DC382D; --pg:#336791;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg:#0E1217; --surface:#161C24; --fg:#E5E9EF; --muted:#98A2B1; --line:#344153;
+    --hot:#3DB8C2; --async:#A9B3C2; --fail:#F0895A;
+    --ok-bg:#12301F; --ok-fg:#7FD9A2; --bad-bg:#3A1D12; --bad-fg:#F6AE8A; --mid-bg:#11282B;
+    --redis:#F0574C; --pg:#6C9BCB;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg:#0E1217; --surface:#161C24; --fg:#E5E9EF; --muted:#98A2B1; --line:#344153;
+  --hot:#3DB8C2; --async:#A9B3C2; --fail:#F0895A;
+  --ok-bg:#12301F; --ok-fg:#7FD9A2; --bad-bg:#3A1D12; --bad-fg:#F6AE8A; --mid-bg:#11282B;
+  --redis:#F0574C; --pg:#6C9BCB;
+}
+body { background:var(--bg); color:var(--fg); font-family:"IBM Plex Sans", system-ui, sans-serif; padding-inline:16px; padding-block:32px 48px; }
+.wrap { max-width:1000px; margin:0 auto; display:flex; flex-direction:column; gap:28px; }
+header h1 { font-size:28px; font-weight:600; margin:0 0 6px; text-wrap:balance; }
+header p { margin:0; color:var(--muted); max-width:65ch; line-height:1.5; }
+h2 { font-size:13px; font-weight:500; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin:0 0 12px; font-family:"IBM Plex Mono", ui-monospace, monospace; }
+.panel { background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:16px; }
+.scroll { overflow-x:auto; }
+.diagram { display:block; width:100%; height:auto; min-width:720px; }
+.diagram text { font-family:"IBM Plex Sans", system-ui, sans-serif; fill:var(--fg); }
+.node rect { fill:var(--surface); stroke:var(--line); stroke-width:1.4; }
+.n-ext rect { stroke-dasharray:5 4; }
+.n-redis rect { stroke:var(--redis); stroke-width:2; }
+.n-kafka rect { stroke:var(--fg); stroke-width:2; }
+.n-pg rect { stroke:var(--pg); stroke-width:2; }
+.ic { color:var(--hot); overflow:visible; }
+.n-kafka .ic, .n-ext .ic { color:var(--fg); }
+.t-title { font-size:15px; font-weight:600; text-anchor:middle; }
+.t-sub { font-size:11.5px; text-anchor:middle; fill:var(--muted) !important; font-family:"IBM Plex Mono", ui-monospace, monospace !important; }
+.t-edge { font-size:12px; fill:var(--muted) !important; font-family:"IBM Plex Mono", ui-monospace, monospace !important; }
+.e { fill:none; stroke-width:1.8; }
+.e-hot { stroke:var(--hot); }
+.e-async { stroke:var(--async); }
+.e-fail { stroke:var(--fail); stroke-dasharray:6 5; }
+.mk-hot { fill:var(--hot); } .mk-async { fill:var(--async); } .mk-fail { fill:var(--fail); }
+.legend > rect { fill:var(--bg); stroke:var(--line); }
+.t-leg-h { font-size:13px; font-weight:600; }
+.t-leg { font-size:12.5px; }
+.t-leg-m { font-size:11.5px; fill:var(--muted) !important; font-family:"IBM Plex Mono", ui-monospace, monospace !important; }
+.lg-svc { fill:var(--surface); stroke:var(--line); }
+.lg-ext { fill:var(--surface); stroke:var(--line); stroke-dasharray:5 4; }
+.st rect { stroke-width:1.4; }
+.st text { font-family:"IBM Plex Mono", ui-monospace, monospace !important; font-size:13px; font-weight:500; text-anchor:middle; }
+.st-mid rect { fill:var(--mid-bg); stroke:var(--hot); }
+.st-ok rect { fill:var(--ok-bg); stroke:var(--ok-fg); } .st-ok text { fill:var(--ok-fg); }
+.st-bad rect { fill:var(--bad-bg); stroke:var(--fail); } .st-bad text { fill:var(--bad-fg); }
+.st-end rect { fill:var(--surface); stroke:var(--muted); }
+.fails { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px; }
+.fail { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+.fail h3 { margin:0 0 6px; font-size:15px; font-weight:600; }
+.fail p { margin:0; color:var(--muted); line-height:1.5; font-size:14px; }
+.fail code { font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:12.5px; color:var(--fg); }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Flash Sale HLD</h1>
+    <p>Reserve is synchronous and decided by one atomic Redis script. Everything after the hold flows through Kafka into a Postgres-backed saga.</p>
+  </header>
+
+  <section>
+    <h2>Architecture</h2>
+    <div class="panel scroll"><svg viewBox="0 0 1000 1370" class="diagram arch" role="img" aria-label="Flash sale architecture"><defs><marker id="m-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="mk-hot"/></marker><marker id="m-async" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="mk-async"/></marker><marker id="m-fail" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="mk-fail"/></marker></defs><path d="M500,140 V200" class="e e-hot" marker-end="url(#m-hot)"/><text x="512" y="175" class="t-edge" text-anchor="start">① join queue / reserve</text><path d="M500,300 V335 H250 V370" class="e e-hot" marker-end="url(#m-hot)"/><text x="375" y="326" class="t-edge" text-anchor="middle">join · poll · get admission JWT</text><path d="M500,300 V335 H750 V370" class="e e-hot" marker-end="url(#m-hot)"/><text x="625" y="326" class="t-edge" text-anchor="middle">POST /reservations + JWT</text><path d="M250,470 V515 H465 V550" class="e e-hot" marker-end="url(#m-hot)"/><text x="357" y="506" class="t-edge" text-anchor="middle">ZADD · ZRANK position</text><path d="M750,470 V515 H535 V550" class="e e-hot" marker-end="url(#m-hot)"/><text x="643" y="506" class="t-edge" text-anchor="middle">② EVAL reserve.lua (atomic)</text><path d="M235,588 H415" class="e e-fail" marker-end="url(#m-fail)"/><text x="325" y="578" class="t-edge" text-anchor="middle">release expired holds</text><path d="M500,650 V730" class="e e-async" marker-end="url(#m-async)"/><text x="512" y="695" class="t-edge" text-anchor="start">③ XREADGROUP stream</text><path d="M500,830 V900" class="e e-async" marker-end="url(#m-async)"/><text x="512" y="870" class="t-edge" text-anchor="start">produce · key = reservationId</text><path d="M500,1000 V1070" class="e e-async" marker-end="url(#m-async)"/><text x="512" y="1040" class="t-edge" text-anchor="start">④ consume · dedupe by eventId</text><path d="M585,1105 H785" class="e e-async" marker-end="url(#m-async)"/><text x="685" y="1096" class="t-edge" text-anchor="middle">charge + idempotency key</text><path d="M785,1138 H585" class="e e-async" marker-end="url(#m-async)"/><text x="685" y="1158" class="t-edge" text-anchor="middle">webhook ok / failed</text><path d="M500,1170 V1240" class="e e-async" marker-end="url(#m-async)"/><text x="512" y="1210" class="t-edge" text-anchor="start">⑤ guarded state UPDATEs</text><path d="M415,1120 H320 V628 H415" class="e e-fail" marker-end="url(#m-fail)"/>
+<text x="308" y="872" class="t-edge" text-anchor="end">confirm → INCR sold</text>
+<text x="308" y="890" class="t-edge" text-anchor="end">release → INCR avail</text>
+<g class="legend" transform="translate(730,710)">
+  <rect width="250" height="236" rx="12"/>
+  <text x="18" y="30" class="t-leg-h">Legend</text>
+  <path d="M18 56 H70" class="e e-hot" marker-end="url(#m-hot)"/><text x="82" y="60" class="t-leg">sync hot path (&lt; 100 ms)</text>
+  <path d="M18 86 H70" class="e e-async" marker-end="url(#m-async)"/><text x="82" y="90" class="t-leg">async, durable pipeline</text>
+  <path d="M18 116 H70" class="e e-fail" marker-end="url(#m-fail)"/><text x="82" y="120" class="t-leg">release / compensation</text>
+  <rect x="18" y="140" width="52" height="26" rx="6" class="lg-svc"/><text x="82" y="158" class="t-leg">our service</text>
+  <rect x="18" y="176" width="52" height="26" rx="6" class="lg-ext"/><text x="82" y="194" class="t-leg">external</text>
+  <text x="18" y="224" class="t-leg-m">① – ⑤ = whiteboard steps</text>
+</g><g class="node n-ext"><rect x="415.0" y="40.0" width="170" height="100" rx="12"/><svg x="481" y="48" width="38" height="38" viewBox="0 0 24 24" class="ic"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 19c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><circle cx="17" cy="9" r="2.6"/><path d="M15.6 13.8c3 .2 5.4 2.1 5.4 5.2"/></g></svg><text x="500" y="107" class="t-title">1M users</text><text x="500" y="125" class="t-sub">browser / app</text></g><g class="node n-svc"><rect x="415.0" y="200.0" width="170" height="100" rx="12"/><svg x="481" y="208" width="38" height="38" viewBox="0 0 24 24" class="ic"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"><path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.3-7.5 9.5-4.3-1.2-7.5-4.9-7.5-9.5V6z"/><path d="M8.6 12l2.4 2.4 4.4-4.8"/></g></svg><text x="500" y="267" class="t-title">API gateway</text><text x="500" y="285" class="t-sub">rate limit · JWT check</text></g><g class="node n-svc"><rect x="165.0" y="370.0" width="170" height="100" rx="12"/><svg x="231" y="378" width="38" height="38" viewBox="0 0 24 24" class="ic"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="5" cy="8" r="2"/><circle cx="12" cy="8" r="2"/><circle cx="19" cy="8" r="2"/><path d="M2.5 15c0-1.8 1.1-3 2.5-3s2.5 1.2 2.5 3M9.5 15c0-1.8 1.1-3 2.5-3s2.5 1.2 2.5 3M16.5 15c0-1.8 1.1-3 2.5-3s2.5 1.2 2.5 3"/><path d="M3 20h17M17 17.5l3 2.5-3 2.5"/></g></svg><text x="250" y="437" class="t-title">Queue service</text><text x="250" y="455" class="t-sub">waiting room</text></g><g class="node n-svc"><rect x="665.0" y="370.0" width="170" height="100" rx="12"/><svg x="731" y="378" width="38" height="38" viewBox="0 0 24 24" class="ic"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3 6.5h18v3.6a1.9 1.9 0 0 0 0 3.8v3.6H3v-3.6a1.9 1.9 0 0 0 0-3.8z"/><path d="M15 7v10" stroke-dasharray="1.6 1.6"/></g></svg><text x="750" y="437" class="t-title">Ticket service</text><text x="750" y="455" class="t-sub">Express · reserve API</text></g><g class="node n-svc"><rect x="65.0" y="550.0" width="170" height="100" rx="12"/><svg x="131" y="558" width="38" height="38" viewBox="0 0 24 24" class="ic"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3.2 2"/></g></svg><text x="150" y="617" class="t-title">Sweeper</text><text x="150" y="635" class="t-sub">every 1 s</text></g><g class="node n-redis"><rect x="415.0" y="550.0" width="170" height="100" rx="12"/><svg x="481" y="558" width="38" height="38" viewBox="0 0 24 24" class="ic"><path d="M3 16.3v1.7l9 3.3 9-3.3v-1.7l-9 3.3z" fill="#A41E11"/><path d="M12 13 21 16.3 12 19.6 3 16.3z" fill="#DC382D"/><path d="M3 11.8v1.7l9 3.3 9-3.3v-1.7l-9 3.3z" fill="#A41E11"/><path d="M12 8.5 21 11.8 12 15.1 3 11.8z" fill="#DC382D"/><path d="M3 7.3v1.7l9 3.3 9-3.3v-1.7l-9 3.3z" fill="#A41E11"/><path d="M12 4 21 7.3 12 10.6 3 7.3z" fill="#DC382D"/><path d="M9.6 7.2 12 6.4l2.4.8L12 8z" fill="#fff" opacity=".9"/></svg><text x="500" y="617" class="t-title">Redis</text><text x="500" y="635" class="t-sub">stock · holds · stream</text></g><g class="node n-svc"><rect x="415.0" y="730.0" width="170" height="100" rx="12"/><svg x="481" y="738" width="38" height="38" viewBox="0 0 24 24" class="ic"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h14M15 5l3 3-3 3"/><path d="M20 16H6M9 13l-3 3 3 3"/></g></svg><text x="500" y="797" class="t-title">Relay</text><text x="500" y="815" class="t-sub">stream → Kafka</text></g><g class="node n-kafka"><rect x="415.0" y="900.0" width="170" height="100" rx="12"/><svg x="481" y="908" width="38" height="38" viewBox="0 0 24 24" class="ic"><g fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="12" r="2.6"/><circle cx="10" cy="4" r="2"/><circle cx="10" cy="20" r="2"/><circle cx="18.5" cy="8" r="2"/><circle cx="18.5" cy="16" r="2"/><path d="M10 6v3.4M10 14.6V18M12.3 10.8l4.4-2M12.3 13.2l4.4 2"/></g></svg><text x="500" y="967" class="t-title">Kafka</text><text x="500" y="985" class="t-sub">reservations.events</text></g><g class="node n-svc"><rect x="415.0" y="1070.0" width="170" height="100" rx="12"/><svg x="481" y="1078" width="38" height="38" viewBox="0 0 24 24" class="ic"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 12a7.5 7.5 0 0 1-13.2 4.9"/><path d="M4.5 12a7.5 7.5 0 0 1 13.2-4.9"/><path d="M18 3.5v3.8h-3.8"/><path d="M6 20.5v-3.8h3.8"/></g></svg><text x="500" y="1137" class="t-title">Order service</text><text x="500" y="1155" class="t-sub">saga orchestrator</text></g><g class="node n-ext"><rect x="785.0" y="1070.0" width="170" height="100" rx="12"/><svg x="851" y="1078" width="38" height="38" viewBox="0 0 24 24" class="ic"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="3" y="6" width="18" height="12.5" rx="2"/><path d="M3 10.2h18M6.5 15h4"/></g></svg><text x="870" y="1137" class="t-title">Payment gateway</text><text x="870" y="1155" class="t-sub">mock · webhooks</text></g><g class="node n-pg"><rect x="415.0" y="1240.0" width="170" height="100" rx="12"/><svg x="481" y="1248" width="38" height="38" viewBox="0 0 24 24" class="ic"><path d="M5 6v12c0 1.45 3.13 2.6 7 2.6s7-1.15 7-2.6V6z" fill="#336791"/><ellipse cx="12" cy="6" rx="7" ry="2.6" fill="#6C9BCB"/><path d="M5 10.2c0 1.45 3.13 2.6 7 2.6s7-1.15 7-2.6M5 14.3c0 1.45 3.13 2.6 7 2.6s7-1.15 7-2.6" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width=".9"/></svg><text x="500" y="1307" class="t-title">PostgreSQL</text><text x="500" y="1325" class="t-sub">orders · payments</text></g></svg></div>
+  </section>
+
+  <section>
+    <h2>Order saga states</h2>
+    <div class="panel scroll"><svg viewBox="0 0 1000 370" class="diagram saga" role="img" aria-label="Order saga states"><defs><marker id="s-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="mk-hot"/></marker><marker id="s-fail" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" class="mk-fail"/></marker></defs><path d="M175,70 H240" class="e e-hot" marker-end="url(#s-hot)"/><text x="207" y="60" class="t-edge" text-anchor="middle">charge</text><path d="M440,70 H520" class="e e-hot" marker-end="url(#s-hot)"/><text x="480" y="60" class="t-edge" text-anchor="middle">webhook ok</text><path d="M640,70 H740" class="e e-hot" marker-end="url(#s-hot)"/><text x="690" y="60" class="t-edge" text-anchor="middle">INCR sold</text><path d="M110,90 V190" class="e e-fail" marker-end="url(#s-fail)"/><text x="120" y="145" class="t-edge" text-anchor="start">TTL 10 min</text><path d="M340,90 V190" class="e e-fail" marker-end="url(#s-fail)"/><text x="350" y="145" class="t-edge" text-anchor="start">declined</text><path d="M600,90 V150 H700 V190" class="e e-fail" marker-end="url(#s-fail)"/><text x="660" y="142" class="t-edge" text-anchor="start">paid after hold expired</text><path d="M130,230 V330 H150" class="e e-fail" marker-end="url(#s-fail)"/><path d="M320,230 V330 H300" class="e e-fail" marker-end="url(#s-fail)"/><text x="330" y="285" class="t-edge" text-anchor="start">release.lua</text><g class="st st-mid"><rect x="45.0" y="50" width="130" height="40" rx="20"/><text x="110" y="75">HELD</text></g><g class="st st-mid"><rect x="240.0" y="50" width="200" height="40" rx="20"/><text x="340" y="75">PAYMENT_PENDING</text></g><g class="st st-mid"><rect x="520.0" y="50" width="120" height="40" rx="20"/><text x="580" y="75">PAID</text></g><g class="st st-ok"><rect x="740.0" y="50" width="160" height="40" rx="20"/><text x="820" y="75">CONFIRMED</text></g><g class="st st-bad"><rect x="45.0" y="190" width="130" height="40" rx="20"/><text x="110" y="215">EXPIRED</text></g><g class="st st-bad"><rect x="240.0" y="190" width="200" height="40" rx="20"/><text x="340" y="215">PAYMENT_FAILED</text></g><g class="st st-bad"><rect x="625.0" y="190" width="150" height="40" rx="20"/><text x="700" y="215">REFUNDED</text></g><g class="st st-end"><rect x="150.0" y="310" width="150" height="40" rx="20"/><text x="225" y="335">RELEASED</text></g></svg></div>
+  </section>
+
+  <section>
+    <h2>Failure paths</h2>
+    <div class="fails">
+      <div class="fail"><h3>Hold expires</h3><p>Sweeper finds <code>score &lt; now</code> in the holds ZSET and runs <code>release.lua</code>. Stock returns; I1 holds.</p></div>
+      <div class="fail"><h3>Payment declined</h3><p>Saga moves <code>PAYMENT_PENDING → PAYMENT_FAILED → RELEASED</code>. No charge, stock returns; I1 and I3 hold.</p></div>
+      <div class="fail"><h3>Relay crashes</h3><p>Un-acked entries stay in the Redis stream. On restart the relay re-sends them; consumers dedupe by <code>eventId</code>.</p></div>
+    </div>
+  </section>
+</div>
+
+</body></html>
