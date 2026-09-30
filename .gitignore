@@ -11,3 +11,6 @@ services/*/src/generated/
 !.env.example
 
 .DS_Store
+
+# k6 output (loadtest/baseline.js)
+loadtest/results/*.json

@@ -34,8 +34,14 @@ KAFKA_REPLICAS   ?= 1
 
 PNPM ?= pnpm
 
+# ---- Load testing (k6 -> Prometheus remote write -> Grafana) -----------------
+K6                ?= k6
+PROMETHEUS_RW_URL ?= http://localhost:9090/api/v1/write
+VARIANT           ?=
+TARGET_RPS        ?=
+
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps shell-db shell-redis topics migrate seed test test-watch lint typecheck check env dev clean
+.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline loadtest-baseline test-watch lint typecheck check env dev clean
 
 help: ## List available targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -72,11 +78,29 @@ migrate: ## prisma migrate dev for each service with a schema; NAME=add_x names 
 			$(PNPM) -C services/$$svc exec prisma migrate dev $(if $(NAME),--name $(NAME)) || exit 1; \
 	done
 
+baseline-db: ## Apply infra/sql/baseline.sql (baseline schema: inventory + holds) to the running postgres
+	@$(DOCKER_COMPOSE) exec -T postgres pg_isready -q -U $(POSTGRES_USER) -d $(POSTGRES_DB) \
+		|| { echo "postgres is not up - run 'make up' first" >&2; exit 1; }
+	$(DOCKER_COMPOSE) exec -T -e PGPASSWORD=$(POSTGRES_PASSWORD) postgres \
+		psql -v ON_ERROR_STOP=1 -U $(POSTGRES_USER) -d $(POSTGRES_DB) < infra/sql/baseline.sql
+
 seed: ## Load seed data (placeholder - nothing to seed yet)
 	@echo "seed: no seed data defined yet"
 
 test: ## Run unit tests in every workspace
 	$(PNPM) -r run test
+
+test-baseline: ## Run the ticket baseline concurrency test against the local postgres (needs `make baseline-db`)
+	DATABASE_URL="$(DATABASE_URL_BASE)" $(PNPM) -C services/ticket run test:baseline
+
+loadtest-baseline: ## k6 baseline run streamed to Prometheus/Grafana: VARIANT=atomic TARGET_RPS=500
+	@[ -n "$(VARIANT)" ] && [ -n "$(TARGET_RPS)" ] \
+		|| { echo "usage: make loadtest-baseline VARIANT=naive|pessimistic|atomic|optimistic TARGET_RPS=500" >&2; exit 1; }
+	VARIANT=$(VARIANT) TARGET_RPS=$(TARGET_RPS) \
+	K6_PROMETHEUS_RW_SERVER_URL=$(PROMETHEUS_RW_URL) \
+	K6_PROMETHEUS_RW_TREND_STATS="p(50),p(95),p(99),avg,max" \
+	K6_PROMETHEUS_RW_STALE_MARKERS=true \
+		$(K6) run -o experimental-prometheus-rw loadtest/baseline.js
 
 test-watch: ## Run unit tests in watch mode in every workspace
 	$(PNPM) -r --parallel run test --watch
