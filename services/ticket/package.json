@@ -10,6 +10,7 @@
     "lint": "biome check --config-path=../../.biomerc.json .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:baseline": "vitest run tests/baseline.concurrency.test.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy"
   },
@@ -19,11 +20,14 @@
     "@prisma/client": "catalog:",
     "express": "catalog:",
     "ioredis": "catalog:",
+    "pg": "catalog:",
+    "winston": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@types/express": "catalog:",
     "@types/node": "catalog:",
+    "@types/pg": "catalog:",
     "prisma": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
