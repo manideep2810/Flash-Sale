@@ -2,13 +2,24 @@ import type { Server } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "@flash/observability";
 import express, { type Express } from "express";
+import type { Pool } from "pg";
+import { createBaselineRouter } from "./baseline/routes.js";
 
 export interface AppState {
   /** Set on SIGTERM so /healthz/ready returns 503 and upstreams stop routing new traffic here. */
   shuttingDown: boolean;
 }
 
-export function createApp(logger: Logger, state: AppState = { shuttingDown: false }): Express {
+export interface AppOptions {
+  /** When set, mounts the /baseline/* concurrency-experiment routes against this pool. */
+  baselinePool?: Pool;
+}
+
+export function createApp(
+  logger: Logger,
+  state: AppState = { shuttingDown: false },
+  { baselinePool }: AppOptions = {},
+): Express {
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json());
@@ -35,10 +46,14 @@ export function createApp(logger: Logger, state: AppState = { shuttingDown: fals
     next();
   });
 
+  if (baselinePool) {
+    app.use(createBaselineRouter({ pool: baselinePool, logger }));
+  }
+
   return app;
 }
 
-export interface StartOptions {
+export interface StartOptions extends AppOptions {
   port: number;
   logger: Logger;
   /** Closes Redis/Kafka/Prisma clients after HTTP traffic has drained. */
@@ -55,10 +70,11 @@ export function startServer({
   closeClients = async () => {},
   drainDelayMs = 5_000,
   shutdownTimeoutMs = 10_000,
+  baselinePool,
 }: StartOptions): Server {
   const state: AppState = { shuttingDown: false };
 
-  const server = createApp(logger, state).listen(port, "0.0.0.0", (error) => {
+  const server = createApp(logger, state, { baselinePool }).listen(port, "0.0.0.0", (error) => {
     if (error) {
       logger.error("server failed to start", error);
       process.exit(1);
