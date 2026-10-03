@@ -39,9 +39,12 @@ K6                ?= k6
 PROMETHEUS_RW_URL ?= http://localhost:9090/api/v1/write
 VARIANT           ?=
 TARGET_RPS        ?=
+# Overrides the services' .env LOG_LEVEL when set (node --env-file never clobbers an existing variable).
+# Per-request info logs written to a terminal block the event loop on Windows; load tests run at warn.
+LOG_LEVEL         ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline loadtest-baseline test-watch lint typecheck check env dev clean
+.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean
 
 help: ## List available targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -93,9 +96,10 @@ test: ## Run unit tests in every workspace
 test-baseline: ## Run the ticket baseline concurrency test against the local postgres (needs `make baseline-db`)
 	DATABASE_URL="$(DATABASE_URL_BASE)" $(PNPM) -C services/ticket run test:baseline
 
-loadtest-baseline: ## k6 baseline run streamed to Prometheus/Grafana: VARIANT=atomic TARGET_RPS=500
+loadtest-baseline: ## k6 baseline run streamed to Prometheus/Grafana: VARIANT=redis TARGET_RPS=500 (service via `make dev-loadtest`)
 	@[ -n "$(VARIANT)" ] && [ -n "$(TARGET_RPS)" ] \
-		|| { echo "usage: make loadtest-baseline VARIANT=naive|pessimistic|atomic|optimistic TARGET_RPS=500" >&2; exit 1; }
+		|| { echo "usage: make loadtest-baseline VARIANT=naive|pessimistic|atomic|optimistic|redis TARGET_RPS=500" >&2; \
+		     echo "       start the service first with 'make dev-loadtest' (LOG_LEVEL=warn, no per-request logs)" >&2; exit 1; }
 	VARIANT=$(VARIANT) TARGET_RPS=$(TARGET_RPS) \
 	K6_PROMETHEUS_RW_SERVER_URL=$(PROMETHEUS_RW_URL) \
 	K6_PROMETHEUS_RW_TREND_STATS="p(50),p(95),p(99),avg,max" \
@@ -124,8 +128,11 @@ env: ## Create each services/<name>/.env from its .env.example (never overwrites
 		fi; \
 	done
 
-dev: ## Run all services in watch mode (needs services/<name>/.env - run `make env` once)
-	$(PNPM) -r --parallel --filter "./services/*" run dev
+dev: ## Run all services in watch mode (needs services/<name>/.env - run `make env` once); LOG_LEVEL=warn to override .env
+	$(if $(LOG_LEVEL),LOG_LEVEL=$(LOG_LEVEL)) $(PNPM) -r --parallel --filter "./services/*" run dev
+
+dev-loadtest: ## `make dev` with per-request logs dropped (LOG_LEVEL=warn) - use this while running k6
+	$(MAKE) dev LOG_LEVEL=warn
 
 clean: ## Delete node_modules, dist and .env files everywhere, plus the stack's containers and volumes
 	-$(DOCKER_COMPOSE) down -v --remove-orphans

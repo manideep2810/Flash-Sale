@@ -22,7 +22,8 @@ import { check } from "k6";
 import http from "k6/http";
 import { Counter } from "k6/metrics";
 
-const VARIANTS = ["naive", "pessimistic", "atomic", "optimistic"];
+// "redis" is the phase-2 hot path (Lua over Redis); the rest are the phase-1 SQL variants.
+const VARIANTS = ["naive", "pessimistic", "atomic", "optimistic", "redis"];
 
 const VARIANT = __ENV.VARIANT;
 const TARGET_RPS = Number(__ENV.TARGET_RPS);
@@ -37,6 +38,25 @@ if (!Number.isInteger(TARGET_RPS) || TARGET_RPS < 1) {
   throw new Error(`TARGET_RPS must be a positive integer, got "${__ENV.TARGET_RPS}"`);
 }
 
+// Both backends take the same bodies and return the same 201/409, so only the paths differ. Reset runs
+// against whichever backend the variant drives, so a Postgres run never needs Redis up, or vice versa.
+const RESET_PATH = VARIANT === "redis" ? "/redis/reset" : "/baseline/reset";
+const RESERVE_PATH = VARIANT === "redis" ? "/redis/reserve" : `/baseline/${VARIANT}/reserve`;
+
+// VU budget has to match how slow the backend is, because a VU is one connection.
+//
+// Little's Law: concurrency = rate x latency. The SQL variants run seconds deep under contention, so
+// they genuinely need thousands. Redis answers in ~2ms, so 5000 rps needs ~10 VUs -- and asking for
+// TARGET_RPS*2 there is actively harmful: 10k sockets overflow the listener's accept queue and Windows
+// answers the overflow with RST, which k6 reports as "connectex: ... actively refused it". That looks
+// like a server failure but never reaches the server at all.
+const MAX_VUS = Number(
+  __ENV.MAX_VUS ||
+    (VARIANT === "redis"
+      ? Math.min(Math.max(TARGET_RPS / 5, 200), 1000)
+      : Math.max(TARGET_RPS * 2, 500)),
+);
+
 const reserveOk = new Counter("reserve_ok");
 const reserveSoldOut = new Counter("reserve_sold_out");
 const reserveError = new Counter("reserve_error");
@@ -49,8 +69,8 @@ export const options = {
       executor: "ramping-arrival-rate",
       startRate: 100,
       timeUnit: "1s",
-      preAllocatedVUs: Math.min(TARGET_RPS, 200),
-      maxVUs: Math.max(TARGET_RPS * 2, 500),
+      preAllocatedVUs: Math.min(TARGET_RPS, 200, MAX_VUS),
+      maxVUs: MAX_VUS,
       stages: [
         { target: TARGET_RPS, duration: "60s" }, // ramp 100 -> TARGET_RPS
         { target: TARGET_RPS, duration: "60s" }, // hold
@@ -65,7 +85,7 @@ export const options = {
 
 export function setup() {
   const res = http.post(
-    `${BASE_URL}/baseline/reset`,
+    `${BASE_URL}${RESET_PATH}`,
     JSON.stringify({ eventId: EVENT_ID, total: TOTAL }),
     { headers: JSON_HEADERS, tags: { name: "reset" } },
   );
@@ -76,7 +96,7 @@ export function setup() {
 
 export default function () {
   const res = http.post(
-    `${BASE_URL}/baseline/${VARIANT}/reserve`,
+    `${BASE_URL}${RESERVE_PATH}`,
     JSON.stringify({ eventId: EVENT_ID, userId: `u-${__VU}-${__ITER}`, qty: 1 }),
     {
       headers: JSON_HEADERS,
