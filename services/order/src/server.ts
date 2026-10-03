@@ -2,6 +2,7 @@ import type { Server } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "@flash/observability";
 import express, { type Express } from "express";
+import { register } from "prom-client";
 
 export interface AppState {
   /** Set on SIGTERM so /healthz/ready returns 503 and upstreams stop routing new traffic here. */
@@ -13,13 +14,23 @@ export function createApp(logger: Logger, state: AppState = { shuttingDown: fals
   app.disable("x-powered-by");
   app.use(express.json());
 
-  // Probes are registered before the request logger so orchestrator polling doesn't flood the logs.
+  // Probes and /metrics are registered before the request logger so polling doesn't flood the logs.
   app.get("/healthz/live", (_req, res) => {
     res.json({ ok: true });
   });
 
   app.get("/healthz/ready", (_req, res) => {
     res.status(state.shuttingDown ? 503 : 200).json({ ok: !state.shuttingDown });
+  });
+
+  // prom-client's default registry; src/metrics.ts is what puts the order metrics on it.
+  app.get("/metrics", async (_req, res) => {
+    try {
+      res.set("content-type", register.contentType).send(await register.metrics());
+    } catch (error) {
+      logger.error("metrics collection failed", error);
+      res.status(500).end();
+    }
   });
 
   app.use((req, res, next) => {
