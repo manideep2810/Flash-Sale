@@ -3,10 +3,10 @@ import { z } from "zod";
 
 const envSchema = baseEnvSchema.extend({
   SERVICE_NAME: z.string().min(1).default("relay"),
-  // Optional until the Redis and Kafka clients are wired in; validated whenever set.
-  REDIS_URL: z.url().optional(),
-  /** Comma-separated host:port list. */
-  KAFKA_BROKERS: z.string().min(1).optional(),
+  /** The Redis the ticket service writes its reservation streams to. */
+  REDIS_URL: z.url(),
+  /** Comma-separated host:port list. Redpanda locally; anything that speaks the Kafka protocol. */
+  KAFKA_BROKERS: z.string().min(1),
 });
 
 export type Config = z.infer<typeof envSchema>;
