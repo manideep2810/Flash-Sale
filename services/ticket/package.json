@@ -21,6 +21,7 @@
     "express": "catalog:",
     "ioredis": "catalog:",
     "pg": "catalog:",
+    "prom-client": "catalog:",
     "winston": "catalog:",
     "zod": "catalog:"
   },
