@@ -94,6 +94,9 @@ redis SET "$TOTAL_KEY" "$TOTAL" > /dev/null
 # stream's last-generated-id is advanced by the discarded entry, which matters to nothing here.
 redis XADD "$STREAM_KEY" MAXLEN 0 '*' init 1 > /dev/null
 
+# The relay reads only the streams of events listed in this set (services/relay/src/streams.ts).
+redis SADD events:active "$EVENT_ID" > /dev/null
+
 # The holds ZSET is deliberately NOT created. Redis has no empty collections -- a sorted set ceases to
 # exist the moment its last member is removed -- so there is nothing to create; reserve.lua's first
 # ZADD brings it into being. It is asserted absent below rather than pretended into existence.

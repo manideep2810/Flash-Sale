@@ -79,7 +79,14 @@ export interface ReserveScript {
 }
 
 /**
- * Returns one event to a pre-sale state: inventory back to `total`, holds and stream emptied.
+ * Set of event ids whose streams the relay reads; it ignores a stream that is not listed here. The
+ * name has to match ACTIVE_EVENTS in services/relay/src/streams.ts.
+ */
+const ACTIVE_EVENTS = "events:active";
+
+/**
+ * Returns one event to a pre-sale state: inventory back to `total`, holds and stream emptied, and the
+ * event marked active so its reservations are relayed.
  *
  * One MULTI rather than a sequence of awaits, so a reset is atomic and costs one round trip instead of
  * five -- a k6 setup() that resets between runs should not be able to leave half-cleared state behind
@@ -99,6 +106,7 @@ export async function resetEvent(pool: RedisPool, eventId: string, total: number
     // relay can XREAD before the first reserve lands. Drop this line if you would rather the stream
     // only appear with its first real entry.
     .xadd(streamKey, "MAXLEN", "0", "*", "init", "1")
+    .sadd(ACTIVE_EVENTS, eventId)
     .exec();
 
   if (!replies) {

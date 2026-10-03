@@ -39,11 +39,16 @@ local holdId = eventId .. ':' .. userId .. ':' .. now
 redis.call('ZADD', holds_key, now + ttl, holdId)
 
 -- 4. Append to stream for durability (Relay will read and produce to Kafka)
+--    The entry is the reservation.created event as the order service consumes it, so it carries
+--    everything an Order row needs. expiresAt is the same value as the hold's ZSET score above.
 redis.call('XADD', stream_key, '*',
+  'type', 'reservation.created',
   'holdId', holdId,
+  'eventId', eventId,
   'userId', userId,
   'qty', qty,
-  'timestamp', now
+  'timestamp', now,
+  'expiresAt', now + ttl
 )
 
 return {1, holdId}
