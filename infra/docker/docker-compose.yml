@@ -49,6 +49,9 @@ services:
       # Lets k6 send native histograms (K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true) if wanted.
       - --enable-feature=native-histograms
     ports: ["9090:9090"]
+    # prometheus.yml scrapes the ticket service on the host via host.docker.internal. Docker Desktop
+    # resolves that name on its own; this line makes it work on Linux engines too.
+    extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       # Paths are relative to this compose file (infra/docker/).
       - ../prometheus.yml:/etc/prometheus/prometheus.yml:ro

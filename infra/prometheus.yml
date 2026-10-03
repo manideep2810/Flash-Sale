@@ -17,8 +17,11 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:9090"]
 
-  # Add services here once they expose /metrics. From inside the container the host machine is
-  # `host.docker.internal`, not `localhost`, e.g.:
-  # - job_name: ticket
-  #   static_configs:
-  #     - targets: ["host.docker.internal:3001"]
+  # Node process metrics (CPU, memory, event-loop lag, GC) for every ticket worker, labelled
+  # worker="<id>" and aggregated by the cluster primary on METRICS_PORT (services/ticket/.env.example).
+  # The service runs on the host, so from inside the container it is `host.docker.internal`, not
+  # `localhost`. Scraped every 5s so the dashboard's 30s rate windows hold several samples.
+  - job_name: ticket
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:9464"]
