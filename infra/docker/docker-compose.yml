@@ -20,6 +20,16 @@ services:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
 
+  # Stream length and the relay group's backlog, read from Redis itself. The relay exports its own
+  # view of these, but that goes dark exactly when the relay is down, which is when they matter.
+  redis-exporter:
+    image: oliver006/redis_exporter:latest   # pin a version
+    depends_on: [redis]
+    command:
+      - --redis.addr=redis://redis:6379
+      - --check-streams=ev:*:stream
+    ports: ["9121:9121"]
+
   redpanda:                     # Kafka-API compatible, single binary, light on RAM
     image: docker.redpanda.com/redpandadata/redpanda:latest   # pin a version
     command:
@@ -32,6 +42,17 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
       interval: 5s
+
+  kafka-ui:                     # topics, messages and consumer groups at http://localhost:8080
+    image: kafbat/kafka-ui:latest   # pin a version
+    depends_on: [redpanda]
+    ports: ["8080:8080"]
+    environment:
+      DYNAMIC_CONFIG_ENABLED: "true"
+      KAFKA_CLUSTERS_0_NAME: local-cluster
+      # Redpanda is the broker and speaks the Kafka protocol, so the UI reads it directly. Inside the
+      # compose network that is its internal listener, not the localhost:19092 the services use.
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: redpanda:9092
 
   jaeger:
     image: jaegertracing/jaeger:latest   # pin a version

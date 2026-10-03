@@ -25,3 +25,23 @@ scrape_configs:
     scrape_interval: 5s
     static_configs:
       - targets: ["host.docker.internal:9464"]
+
+  # Outbox metrics. Neither service is clustered, so each serves /metrics on its own PORT
+  # (services/relay/.env.example, services/order/.env.example).
+  - job_name: relay
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:3002"]
+
+  - job_name: order
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:3003"]
+
+  # Stream length and the relay group's unread and pending counts, read straight from Redis by
+  # redis_exporter. Unlike the relay's own gauges these keep reporting while the relay is down. It is
+  # a container on the same compose network, so it is reached by service name.
+  - job_name: redis
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["redis-exporter:9121"]

@@ -28,9 +28,13 @@ DATABASE_URL_BASE := postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhos
 PRISMA_SERVICES := $(patsubst services/%/prisma/schema.prisma,%,$(wildcard services/*/prisma/schema.prisma))
 
 # ---- Kafka (Redpanda) --------------------------------------------------------
-KAFKA_TOPICS     ?= reservations.events payments.events orders.events
+# reservations.events and its DLQ are created by infra/kafka/topics.sh, which sets their partition
+# counts; KAFKA_TOPICS is everything else, all at KAFKA_PARTITIONS.
+KAFKA_TOPICS     ?= payments.events orders.events
 KAFKA_PARTITIONS ?= 12
 KAFKA_REPLICAS   ?= 1
+TOPICS_SH        := COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT_NAME) COMPOSE_FILE=$(COMPOSE_FILE) \
+	KAFKA_REPLICAS=$(KAFKA_REPLICAS) bash infra/kafka/topics.sh
 
 PNPM ?= pnpm
 
@@ -49,8 +53,9 @@ LOG_LEVEL         ?=
 help: ## List available targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-up: ## Start the stack and block until every container is healthy
+up: ## Start the stack, block until every container is healthy, then create the reservation topics
 	$(DOCKER_COMPOSE) up -d --wait --wait-timeout $(WAIT_TIMEOUT)
+	$(TOPICS_SH)
 	@echo "✓ Stack ready"
 
 down: ## Stop the stack and delete its containers and volumes (wipes local data)
@@ -69,6 +74,7 @@ shell-redis: ## Open a redis-cli REPL in the redis container
 	$(DOCKER_COMPOSE) exec redis redis-cli
 
 topics: ## Create the Kafka topics in Redpanda (safe to re-run)
+	$(TOPICS_SH)
 	$(DOCKER_COMPOSE) exec -T redpanda rpk topic create $(KAFKA_TOPICS) \
 		--partitions $(KAFKA_PARTITIONS) --replicas $(KAFKA_REPLICAS) --if-not-exists
 
