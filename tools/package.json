@@ -1,0 +1,22 @@
+{
+  "name": "@flash/tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check-outbox": "tsx check-outbox.ts",
+    "lint": "biome check --config-path=../.biomerc.json .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@confluentinc/kafka-javascript": "catalog:",
+    "ioredis": "catalog:",
+    "pg": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:"
+  }
+}

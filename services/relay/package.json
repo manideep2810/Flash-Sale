@@ -12,10 +12,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@confluentinc/kafka-javascript": "catalog:",
     "@flash/config": "workspace:*",
     "@flash/kafka": "workspace:*",
     "@flash/observability": "workspace:*",
     "express": "catalog:",
+    "ioredis": "catalog:",
+    "prom-client": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

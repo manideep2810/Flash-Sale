@@ -10,15 +10,19 @@
     "lint": "biome check --config-path=../../.biomerc.json .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy"
   },
   "dependencies": {
+    "@confluentinc/kafka-javascript": "catalog:",
     "@flash/config": "workspace:*",
     "@flash/kafka": "workspace:*",
     "@flash/observability": "workspace:*",
+    "@prisma/adapter-pg": "catalog:",
     "@prisma/client": "catalog:",
     "express": "catalog:",
+    "prom-client": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

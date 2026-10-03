@@ -1,0 +1,23 @@
+{
+  "name": "@flash/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:e2e": "vitest run",
+    "lint": "biome check --config-path=../../.biomerc.json .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@confluentinc/kafka-javascript": "catalog:",
+    "ioredis": "catalog:",
+    "pg": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/pg": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  }
+}
