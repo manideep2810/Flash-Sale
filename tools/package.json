@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "check-outbox": "tsx check-outbox.ts",
+    "check-invariants": "tsx check-invariants.ts",
+    "smoke-phase4": "tsx smoke-phase4.ts",
     "lint": "biome check --config-path=../.biomerc.json .",
     "typecheck": "tsc --noEmit"
   },
