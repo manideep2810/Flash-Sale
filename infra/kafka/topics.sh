@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 #
-# infra/kafka/topics.sh -- create the reservation topics in the local Redpanda.
+# infra/kafka/topics.sh -- create the reservation and payment topics in the local Redpanda.
 #
 #   bash infra/kafka/topics.sh                   # also run by `make up` once the stack is healthy
 #   KAFKA_REPLICAS=3 bash infra/kafka/topics.sh
 #
 #   reservations.events        12 partitions   relay -> order service, keyed by reservationId
 #   reservations.events.dlq     3 partitions   messages the order consumer gave up on
+#   payments.commands          80 partitions   order -> payment: PaymentRequested, keyed by orderId
+#   payments.events            12 partitions   payment -> order: PaymentProcessed, keyed by orderId
+#   orders.events              12 partitions   order service outcomes (OrderExpired, OrderPaid, ...), keyed by orderId
 #
 # Safe to re-run: a topic that already exists is left alone, which also means editing a partition
 # count here does not change a topic that is already there. Replication factor defaults to 1 because
@@ -25,6 +28,9 @@ COMPOSE=(docker compose -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE")
 TOPICS=(
   "reservations.events:12"
   "reservations.events.dlq:3"
+  "payments.commands:80"
+  "payments.events:12"
+  "orders.events:12"
 )
 
 for topic in "${TOPICS[@]}"; do

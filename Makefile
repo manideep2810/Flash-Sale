@@ -22,15 +22,16 @@ POSTGRES_PASSWORD ?= app
 POSTGRES_DB       ?= flashsale
 POSTGRES_PORT     ?= 5434
 DATABASE_URL_BASE := postgresql://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)
+REDIS_URL         ?= redis://localhost:6380
 
 # Every service with a Prisma schema. Each migrates into its own Postgres schema (named after the
 # service) so their migration histories never collide in the shared database.
 PRISMA_SERVICES := $(patsubst services/%/prisma/schema.prisma,%,$(wildcard services/*/prisma/schema.prisma))
 
 # ---- Kafka (Redpanda) --------------------------------------------------------
-# reservations.events and its DLQ are created by infra/kafka/topics.sh, which sets their partition
-# counts; KAFKA_TOPICS is everything else, all at KAFKA_PARTITIONS.
-KAFKA_TOPICS     ?= payments.events orders.events
+# reservations.events, its DLQ and the payments.* topics are created by infra/kafka/topics.sh, which
+# sets their partition counts; KAFKA_TOPICS is everything else, all at KAFKA_PARTITIONS.
+KAFKA_TOPICS     ?= orders.events
 KAFKA_PARTITIONS ?= 12
 KAFKA_REPLICAS   ?= 1
 TOPICS_SH        := COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT_NAME) COMPOSE_FILE=$(COMPOSE_FILE) \
@@ -48,7 +49,7 @@ TARGET_RPS        ?=
 LOG_LEVEL         ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean
+.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline test-order-db test-payment-db smoke-phase4 check-invariants loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean
 
 help: ## List available targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -101,6 +102,18 @@ test: ## Run unit tests in every workspace
 
 test-baseline: ## Run the ticket baseline concurrency test against the local postgres (needs `make baseline-db`)
 	DATABASE_URL="$(DATABASE_URL_BASE)" $(PNPM) -C services/ticket run test:baseline
+
+test-order-db: ## Run the order payment-claim/timeout tests against a throwaway `order_test` schema in the local postgres
+	DATABASE_URL="$(DATABASE_URL_BASE)?schema=order_test" REDIS_URL="$(REDIS_URL)" $(PNPM) -C services/order run test:db
+
+test-payment-db: ## Run the payment-mock request-handling tests against a throwaway `payment_test` schema in the local postgres
+	DATABASE_URL="$(DATABASE_URL_BASE)?schema=payment_test" $(PNPM) -C services/payment-mock run test:db
+
+smoke-phase4: ## reserve -> pay -> wait for the payment -> check invariants (needs `make dev` and the stack up)
+	$(PNPM) -C tools run smoke-phase4
+
+check-invariants: ## Check the saga invariants (I1-I4) against the running stack: make check-invariants [EVENT=evt-001]
+	$(PNPM) -C tools run check-invariants $(EVENT)
 
 loadtest-baseline: ## k6 baseline run streamed to Prometheus/Grafana: VARIANT=redis TARGET_RPS=500 (service via `make dev-loadtest`)
 	@[ -n "$(VARIANT)" ] && [ -n "$(TARGET_RPS)" ] \

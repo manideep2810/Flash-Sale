@@ -38,6 +38,20 @@ scrape_configs:
     static_configs:
       - targets: ["host.docker.internal:3003"]
 
+  # Phase 4 saga. order-api is the job above (3003); the worker and the payment service each serve
+  # /metrics on their own PORT (services/order/.env.example, services/payment-mock/.env.example).
+  - job_name: order-worker
+    scrape_interval: 5s
+    static_configs:
+      # 3007 is the second replica, run only by the chaos load run (tests/e2e/phase4/run-load.ts).
+      - targets: ["host.docker.internal:3006", "host.docker.internal:3007"]
+
+  - job_name: payment
+    scrape_interval: 5s
+    static_configs:
+      # 3008-3010 are extra payment processes, started by the load run (tests/e2e/phase4/run-load.ts).
+      - targets: ["host.docker.internal:3004", "host.docker.internal:3008", "host.docker.internal:3009", "host.docker.internal:3010"]
+
   # Stream length and the relay group's unread and pending counts, read straight from Redis by
   # redis_exporter. Unlike the relay's own gauges these keep reporting while the relay is down. It is
   # a container on the same compose network, so it is reached by service name.
