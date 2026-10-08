@@ -1,7 +1,7 @@
 import type { Server } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "@flash/observability";
-import express, { type Express } from "express";
+import express, { type Express, type Router } from "express";
 import { register } from "prom-client";
 
 export interface AppState {
@@ -9,7 +9,11 @@ export interface AppState {
   shuttingDown: boolean;
 }
 
-export function createApp(logger: Logger, state: AppState = { shuttingDown: false }): Express {
+export function createApp(
+  logger: Logger,
+  state: AppState = { shuttingDown: false },
+  routes?: Router,
+): Express {
   const app = express();
   app.disable("x-powered-by");
   app.use(express.json());
@@ -46,12 +50,18 @@ export function createApp(logger: Logger, state: AppState = { shuttingDown: fals
     next();
   });
 
+  if (routes) {
+    app.use(routes);
+  }
+
   return app;
 }
 
 export interface StartOptions {
   port: number;
   logger: Logger;
+  /** Business routes, mounted after the probes and the request logger. */
+  routes?: Router;
   /** Closes Redis/Kafka/Prisma clients after HTTP traffic has drained. */
   closeClients?: () => Promise<void>;
   /** How long readiness reports 503 before the listener closes, so load balancers catch up. */
@@ -63,13 +73,14 @@ export interface StartOptions {
 export function startServer({
   port,
   logger,
+  routes,
   closeClients = async () => {},
   drainDelayMs = 5_000,
   shutdownTimeoutMs = 10_000,
 }: StartOptions): Server {
   const state: AppState = { shuttingDown: false };
 
-  const server = createApp(logger, state).listen(port, "0.0.0.0", (error) => {
+  const server = createApp(logger, state, routes).listen(port, "0.0.0.0", (error) => {
     if (error) {
       logger.error("server failed to start", error);
       process.exit(1);
