@@ -329,6 +329,9 @@ importers:
       express:
         specifier: 'catalog:'
         version: 5.2.1
+      ioredis:
+        specifier: 'catalog:'
+        version: 6.0.0
       prom-client:
         specifier: 'catalog:'
         version: 15.1.3
@@ -360,15 +363,27 @@ importers:
 
   services/payment-mock:
     dependencies:
+      '@confluentinc/kafka-javascript':
+        specifier: 'catalog:'
+        version: 1.10.1
       '@flash/config':
         specifier: workspace:*
         version: link:../../packages/config
       '@flash/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@prisma/adapter-pg':
+        specifier: 'catalog:'
+        version: 7.10.0
+      '@prisma/client':
+        specifier: 'catalog:'
+        version: 7.10.0(prisma@7.10.0(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@7.0.2))(typescript@7.0.2)
       express:
         specifier: 'catalog:'
         version: 5.2.1
+      prom-client:
+        specifier: 'catalog:'
+        version: 15.1.3
       zod:
         specifier: 'catalog:'
         version: 4.6.5
@@ -379,6 +394,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.6
+      prisma:
+        specifier: 'catalog:'
+        version: 7.10.0(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@7.0.2)
       tsx:
         specifier: 'catalog:'
         version: 4.23.15
@@ -548,6 +566,9 @@ importers:
       '@types/pg':
         specifier: 'catalog:'
         version: 8.23.1
+      tsx:
+        specifier: 'catalog:'
+        version: 4.23.15
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
