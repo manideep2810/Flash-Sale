@@ -34,8 +34,8 @@ export const RESERVE_LUA: string = readReserveLua();
 /** Local digest of the script text, used only to sanity-check what SCRIPT LOAD hands back. */
 export const RESERVE_LUA_SHA1: string = createHash("sha1").update(RESERVE_LUA).digest("hex");
 
-/** How long a hold stays valid; becomes the ZSET score as `now + ttl`. */
-const DEFAULT_HOLD_TTL_MS = 120_000;
+/** How long a hold stays valid; becomes the ZSET score as `now + ttl`. HOLD_TTL_SEC=600 by default. */
+const DEFAULT_HOLD_TTL_MS = 600_000;
 
 export type RedisReserveResult = { ok: true; holdId: string } | { ok: false; reason: "SOLD_OUT" };
 
@@ -44,12 +44,28 @@ export type RedisReserveResult = { ok: true; holdId: string } | { ok: false; rea
  *
  * Untagged names. A standalone Redis or a Sentinel primary/replica set has one keyspace and no slots,
  * so nothing here needs a hash tag. Redis CLUSTER would reject the script with CROSSSLOT, because
- * these three keys hash to different slots and a script may only touch one. Moving to Cluster means
+ * these four keys hash to different slots and a script may only touch one. Moving to Cluster means
  * wrapping the id in a shared tag -- `ev:{${eventId}}:avail` -- here, in reserve.lua's header, and in
  * infra/redis/init.sh, together.
  */
-export function reserveKeys(eventId: string): [string, string, string] {
-  return [`ev:${eventId}:avail`, `ev:${eventId}:holds`, `ev:${eventId}:stream`];
+export function reserveKeys(eventId: string): [string, string, string, string] {
+  return [`ev:${eventId}:avail`, `ev:${eventId}:holds`, `ev:${eventId}:stream`, heldKey(eventId)];
+}
+
+/**
+ * Units currently on hold: incremented by reserve.lua, and decremented by the order service's
+ * confirm.lua and release.lua when they remove a hold. avail + held + sold = total.
+ */
+export function heldKey(eventId: string): string {
+  return `ev:${eventId}:held`;
+}
+
+/**
+ * Tickets confirmed as sold (hold -> sold) by the order service's confirm.lua; the hot path never
+ * touches it. With avail and the live holds it accounts for `total`: avail + held + sold = total.
+ */
+export function soldKey(eventId: string): string {
+  return `ev:${eventId}:sold`;
 }
 
 /** Seeded alongside avail for reconciliation; the hot path never reads it. */
@@ -93,13 +109,14 @@ const ACTIVE_EVENTS = "events:active";
  * if the connection drops mid-way.
  */
 export async function resetEvent(pool: RedisPool, eventId: string, total: number): Promise<void> {
-  const [availKey, holdsKey, streamKey] = reserveKeys(eventId);
+  const [availKey, holdsKey, streamKey, held] = reserveKeys(eventId);
   const totals = totalKey(eventId);
+  const sold = soldKey(eventId);
 
   const replies = await pool
     .next()
     .multi()
-    .del(availKey, holdsKey, streamKey, totals)
+    .del(availKey, holdsKey, streamKey, totals, sold, held)
     .set(availKey, String(total))
     .set(totals, String(total))
     // Recreate the stream empty: XADD makes the key, MAXLEN 0 trims the entry straight back out, so a
@@ -122,7 +139,7 @@ export async function resetEvent(pool: RedisPool, eventId: string, total: number
 export interface ReserveScriptOptions {
   pool: RedisPool;
   logger: Logger;
-  /** Defaults to HOLD_TTL_MS from the environment, then to two minutes. */
+  /** Defaults to HOLD_TTL_MS, else HOLD_TTL_SEC, from the environment, then to ten minutes. */
   holdTtlMs?: number;
 }
 
@@ -135,16 +152,21 @@ export interface ReserveScriptOptions {
 export async function createReserveScript({
   pool,
   logger,
-  holdTtlMs = Number.parseInt(process.env.HOLD_TTL_MS ?? String(DEFAULT_HOLD_TTL_MS), 10),
+  holdTtlMs = Number.parseInt(
+    process.env.HOLD_TTL_MS ??
+      (process.env.HOLD_TTL_SEC ? String(Number(process.env.HOLD_TTL_SEC) * 1000) : undefined) ??
+      String(DEFAULT_HOLD_TTL_MS),
+    10,
+  ),
 }: ReserveScriptOptions): Promise<ReserveScript> {
   if (!Number.isInteger(holdTtlMs) || holdTtlMs < 1) {
-    throw new Error(`HOLD_TTL_MS must be a positive integer, got "${process.env.HOLD_TTL_MS}"`);
+    throw new Error(`HOLD_TTL_MS (or HOLD_TTL_SEC) must be a positive integer, got "${holdTtlMs}"`);
   }
 
   let sha = await loadReserveScript(pool);
 
   async function run(sha1: string, eventId: string, userId: string, qty: number): Promise<unknown> {
-    const [availKey, holdsKey, streamKey] = reserveKeys(eventId);
+    const [availKey, holdsKey, streamKey, held] = reserveKeys(eventId);
     // Milliseconds: Lua 5.1 stringifies numbers with %.14g, and a 13-digit epoch survives that
     // intact, which matters because holdId concatenates `now` directly.
     const argv: [string, string, string, string] = [
@@ -153,7 +175,9 @@ export async function createReserveScript({
       String(qty),
       String(holdTtlMs),
     ];
-    return pool.next().evalsha(sha1, 3, availKey, holdsKey, streamKey, ...argv, String(Date.now()));
+    return pool
+      .next()
+      .evalsha(sha1, 4, availKey, holdsKey, streamKey, held, ...argv, String(Date.now()));
   }
 
   return {

@@ -1,8 +1,8 @@
 -- services/ticket/src/redis/reserve.lua
--- KEYS: [ev:<eventId>:avail, ev:<eventId>:holds, ev:<eventId>:stream]
+-- KEYS: [ev:<eventId>:avail, ev:<eventId>:holds, ev:<eventId>:stream, ev:<eventId>:held]
 --       Plain, untagged key names. On a standalone Redis or a Sentinel primary/replica set there is
 --       one keyspace and no slots, so this is fine. Redis CLUSTER would reject it: a script may only
---       touch keys in a single slot, and these three hash to different ones (CROSSSLOT). Going to
+--       touch keys in a single slot, and these four hash to different ones (CROSSSLOT). Going to
 --       Cluster means restoring a shared hash tag -- ev:{<eventId>}:avail -- in reserveKeys() in
 --       index.ts, in infra/redis/init.sh, and here.
 -- ARGV: [eventId, userId, qty, ttl, now]   ttl and now are milliseconds.
@@ -18,6 +18,7 @@
 local avail_key = KEYS[1]
 local holds_key = KEYS[2]
 local stream_key = KEYS[3]
+local held_key = KEYS[4]
 
 local eventId = ARGV[1]
 local userId = ARGV[2]
@@ -37,6 +38,11 @@ redis.call('DECRBY', avail_key, qty)
 -- 3. Add to holds (ZSET with expiry timestamp as score)
 local holdId = eventId .. ':' .. userId .. ':' .. now
 redis.call('ZADD', holds_key, now + ttl, holdId)
+
+-- 3b. Count the units now on hold, in the same atomic step as the DECRBY above, so avail + held + sold
+--     = total holds at every instant. confirm.lua (held -> sold) and release.lua (held -> avail) in the
+--     order service move the units out again, only when they actually remove the hold.
+redis.call('INCRBY', held_key, qty)
 
 -- 4. Append to stream for durability (Relay will read and produce to Kafka)
 --    The entry is the reservation.created event as the order service consumes it, so it carries
