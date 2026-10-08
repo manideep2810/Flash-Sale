@@ -1,0 +1,61 @@
+# Prometheus for local load testing. Mounted by infra/docker/docker-compose.yml.
+#
+# k6 metrics do NOT come from a scrape job: k6 exposes no /metrics endpoint (port 6565 is its REST
+# control API, off by default). k6 pushes to this server's remote-write receiver instead:
+#
+#   make loadtest-baseline VARIANT=atomic TARGET_RPS=500
+#   # = k6 run -o experimental-prometheus-rw, K6_PROMETHEUS_RW_SERVER_URL=http://localhost:9090/api/v1/write
+#
+# The receiver is switched on by --web.enable-remote-write-receiver in the compose file.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Node process metrics (CPU, memory, event-loop lag, GC) for every ticket worker, labelled
+  # worker="<id>" and aggregated by the cluster primary on METRICS_PORT (services/ticket/.env.example).
+  # The service runs on the host, so from inside the container it is `host.docker.internal`, not
+  # `localhost`. Scraped every 5s so the dashboard's 30s rate windows hold several samples.
+  - job_name: ticket
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:9464"]
+
+  # Outbox metrics. Neither service is clustered, so each serves /metrics on its own PORT
+  # (services/relay/.env.example, services/order/.env.example).
+  - job_name: relay
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:3002"]
+
+  - job_name: order
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:3003"]
+
+  # Phase 4 saga. order-api is the job above (3003); the worker and the payment service each serve
+  # /metrics on their own PORT (services/order/.env.example, services/payment-mock/.env.example).
+  - job_name: order-worker
+    scrape_interval: 5s
+    static_configs:
+      # 3007 is the second replica, run only by the chaos load run (tests/e2e/phase4/run-load.ts).
+      - targets: ["host.docker.internal:3006", "host.docker.internal:3007"]
+
+  - job_name: payment
+    scrape_interval: 5s
+    static_configs:
+      # 3008-3010 are extra payment processes, started by the load run (tests/e2e/phase4/run-load.ts).
+      - targets: ["host.docker.internal:3004", "host.docker.internal:3008", "host.docker.internal:3009", "host.docker.internal:3010"]
+
+  # Stream length and the relay group's unread and pending counts, read straight from Redis by
+  # redis_exporter. Unlike the relay's own gauges these keep reporting while the relay is down. It is
+  # a container on the same compose network, so it is reached by service name.
+  - job_name: redis
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["redis-exporter:9121"]

@@ -5,7 +5,8 @@ services:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
       POSTGRES_DB: flashsale
-    ports: ["5434:5434"]
+    # host 5434 (another project already owns 5432/5433) -> container 5432, where postgres listens
+    ports: ["5434:5432"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U app"]
       interval: 5s
@@ -13,10 +14,21 @@ services:
   redis:
     image: redis:7.4            # or valkey/valkey:8
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
-    ports: ["6380:6380"]
+    # host 6380 (another project already owns 6379) -> container 6379, where redis listens
+    ports: ["6380:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
+
+  # Stream length and the relay group's backlog, read from Redis itself. The relay exports its own
+  # view of these, but that goes dark exactly when the relay is down, which is when they matter.
+  redis-exporter:
+    image: oliver006/redis_exporter:latest   # pin a version
+    depends_on: [redis]
+    command:
+      - --redis.addr=redis://redis:6379
+      - --check-streams=ev:*:stream
+    ports: ["9121:9121"]
 
   redpanda:                     # Kafka-API compatible, single binary, light on RAM
     image: docker.redpanda.com/redpandadata/redpanda:latest   # pin a version
@@ -31,9 +43,55 @@ services:
       test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
       interval: 5s
 
+  kafka-ui:                     # topics, messages and consumer groups at http://localhost:8080
+    image: kafbat/kafka-ui:latest   # pin a version
+    depends_on: [redpanda]
+    ports: ["8080:8080"]
+    environment:
+      DYNAMIC_CONFIG_ENABLED: "true"
+      KAFKA_CLUSTERS_0_NAME: local-cluster
+      # Redpanda is the broker and speaks the Kafka protocol, so the UI reads it directly. Inside the
+      # compose network that is its internal listener, not the localhost:19092 the services use.
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: redpanda:9092
+
   jaeger:
     image: jaegertracing/jaeger:latest   # pin a version
     ports:
       - "16686:16686"   # UI
       - "4317:4317"     # OTLP gRPC
       - "4318:4318"     # OTLP HTTP
+
+  prometheus:
+    image: prom/prometheus:latest   # pin a version
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # k6 has no scrape endpoint; it PUSHES via `-o experimental-prometheus-rw` to /api/v1/write.
+      - --web.enable-remote-write-receiver
+      # Lets k6 send native histograms (K6_PROMETHEUS_RW_TREND_AS_NATIVE_HISTOGRAM=true) if wanted.
+      - --enable-feature=native-histograms
+    ports: ["9090:9090"]
+    # prometheus.yml scrapes the ticket service on the host via host.docker.internal. Docker Desktop
+    # resolves that name on its own; this line makes it work on Linux engines too.
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      # Paths are relative to this compose file (infra/docker/).
+      - ../prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 5s
+
+  grafana:
+    image: grafana/grafana:latest   # pin a version
+    depends_on: [prometheus]
+    ports: ["3000:3000"]
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin   # local dev only
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  prometheus-data:
+  grafana-storage:

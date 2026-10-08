@@ -34,3 +34,14 @@ export function loadEnv<Schema extends z.ZodObject>(
   }
   return result.data;
 }
+
+/**
+ * Crash-injection point for the end-to-end tests. When NODE_ENV is "test" and FAULT_POINT names this
+ * point, the process exits with 137 (what a SIGKILL looks like) without any cleanup. In every other
+ * environment it does nothing, whatever FAULT_POINT says.
+ */
+export function faultPoint(name: string, env: NodeJS.ProcessEnv = process.env): void {
+  if (env.NODE_ENV === "test" && env.FAULT_POINT === name) {
+    process.exit(137);
+  }
+}

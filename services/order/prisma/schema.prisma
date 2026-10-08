@@ -8,3 +8,39 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+// 1. The Order (ticket reservation)
+model Order {
+  id               String     @id // Same as reservationId/holdId
+  eventId          String // Which event
+  userId           String // Which user
+  qty              Int // How many tickets
+  state            OrderState @default(HELD) // Current state (HELD, PAID, CONFIRMED, etc.)
+  expiresAt        DateTime // When the hold expires
+  holdSettledAt    DateTime? // When the order's Redis hold was confirmed (PAID) or released (-> RELEASED); null until then
+  paymentStartedAt DateTime? // When the payment processor claimed it (HELD -> PAYMENT_PENDING); the stale-claim clock
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  @@index([eventId, state]) // Speed up queries like "find all HELD orders for this event"
+  @@index([holdSettledAt, state]) // Speed up the settlement sweeper: "unsettled PAID / EXPIRED / PAYMENT_FAILED"
+  @@index([state, expiresAt]) // Speed up the timeout query: "find HELD orders past expiresAt"
+}
+
+// 2. Track which events we've already processed (for dedupe)
+model ProcessedEvent {
+  eventId     String   @id // stream:entry-id from Redis
+  processedAt DateTime @default(now())
+}
+
+// 3. All possible order states (like an enum)
+enum OrderState {
+  HELD // Just reserved, waiting for payment
+  PAYMENT_PENDING // Payment started
+  PAID // Payment confirmed
+  CONFIRMED // Order confirmed, ticket issued
+  EXPIRED // Hold expired, ticket released
+  PAYMENT_FAILED // Payment declined
+  REFUNDED // Refund issued
+  RELEASED // Hold released early
+}

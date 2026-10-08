@@ -1,0 +1,22 @@
+// Models for the payment-mock service's own database. Add models, then run `prisma migrate dev`.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// A payment attempt for an order (idempotencyKey makes retries safe)
+model Payment {
+  id             String   @id @default(cuid())
+  orderId        String   @unique
+  idempotencyKey String   @unique
+  amount         Int
+  status         String // PROCESSING, SUCCEEDED, FAILED
+  chargeId       String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @default(now()) @updatedAt // when the row was last written; a PROCESSING row that stops moving is stale
+}

@@ -3,7 +3,7 @@
   "root": true,
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!**/dist", "!**/coverage", "!**/src/generated"]
+    "includes": ["**", "!**/dist", "!**/coverage", "!**/src/generated", "!loadtest/results"]
   },
   "formatter": {
     "enabled": true,

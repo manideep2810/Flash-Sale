@@ -5,20 +5,29 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
-    "start": "node --env-file-if-exists=.env dist/index.js",
+    "dev": "pnpm run --parallel \"/^dev:/\"",
+    "dev:api": "tsx watch --env-file-if-exists=.env src/api.ts",
+    "dev:worker": "tsx watch --env-file-if-exists=.env src/worker.ts",
+    "start:api": "node --env-file-if-exists=.env dist/api.js",
+    "start:worker": "node --env-file-if-exists=.env dist/worker.js",
     "lint": "biome check --config-path=../../.biomerc.json .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:db": "prisma migrate deploy && vitest run --no-file-parallelism tests/payment-flow.test.ts tests/settlement.test.ts",
+    "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy"
   },
   "dependencies": {
+    "@confluentinc/kafka-javascript": "catalog:",
     "@flash/config": "workspace:*",
     "@flash/kafka": "workspace:*",
     "@flash/observability": "workspace:*",
+    "@prisma/adapter-pg": "catalog:",
     "@prisma/client": "catalog:",
     "express": "catalog:",
+    "ioredis": "catalog:",
+    "prom-client": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

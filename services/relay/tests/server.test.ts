@@ -22,4 +22,22 @@ describe("relay server", () => {
       await once(server, "close");
     }
   });
+
+  it("answers the readiness probe with 503 while a dependency is unreachable", async () => {
+    const app = createApp(createLogger({ service: "relay", level: "error" }), undefined, {
+      checkDependencies: async () => ({ redis: true, kafka: false }),
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      const ready = await fetch(`http://127.0.0.1:${port}/healthz/ready`);
+      expect(ready.status).toBe(503);
+      expect(await ready.json()).toEqual({ ok: false, redis: true, kafka: false });
+    } finally {
+      server.close();
+      await once(server, "close");
+    }
+  });
 });

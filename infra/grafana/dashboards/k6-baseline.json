@@ -1,0 +1,352 @@
+{
+  "uid": "k6-baseline",
+  "title": "k6 Baseline Reserve",
+  "tags": ["k6", "baseline"],
+  "schemaVersion": 39,
+  "version": 5,
+  "editable": true,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "timezone": "browser",
+  "templating": {
+    "list": [
+      {
+        "name": "variant",
+        "label": "Variant",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": { "query": "label_values(k6_http_reqs_total, variant)", "refId": "variant" },
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate",
+      "description": "Reserve requests per second actually achieved, per variant.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "min": 0 }, "overrides": [] },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (variant) (rate(k6_http_reqs_total{name=\"reserve\", variant=~\"$variant\"}[$__rate_interval]))",
+          "legendFormat": "{{variant}}"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Latency (p50 / p95 / p99)",
+      "description": "http_req_duration for reserve calls. Worst series across response statuses.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0 }, "overrides": [] },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (variant) (k6_http_req_duration_p50{name=\"reserve\", variant=~\"$variant\"})",
+          "legendFormat": "{{variant}} p50"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (variant) (k6_http_req_duration_p95{name=\"reserve\", variant=~\"$variant\"})",
+          "legendFormat": "{{variant}} p95"
+        },
+        {
+          "refId": "C",
+          "expr": "max by (variant) (k6_http_req_duration_p99{name=\"reserve\", variant=~\"$variant\"})",
+          "legendFormat": "{{variant}} p99"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Reserve outcomes",
+      "description": "Custom counters from loadtest/baseline.js: 201 ok, 409 sold out, anything else error.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "ops", "min": 0 }, "overrides": [] },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (variant) (rate(k6_reserve_ok_total{variant=~\"$variant\"}[$__rate_interval]))",
+          "legendFormat": "{{variant}} ok"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (variant) (rate(k6_reserve_sold_out_total{variant=~\"$variant\"}[$__rate_interval]))",
+          "legendFormat": "{{variant}} sold out"
+        },
+        {
+          "refId": "C",
+          "expr": "sum by (variant) (rate(k6_reserve_error_total{variant=~\"$variant\"}[$__rate_interval]))",
+          "legendFormat": "{{variant}} error"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Failed request ratio",
+      "description": "Share of reserve requests with an unexpected status (not 201/409). The k6 threshold is 1%.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 0.01 }]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by (variant) (rate(k6_http_reqs_total{name=\"reserve\", expected_response=\"false\", variant=~\"$variant\"}[$__rate_interval])) or sum by (variant) (rate(k6_http_reqs_total{name=\"reserve\", variant=~\"$variant\"}[$__rate_interval])) * 0) / sum by (variant) (rate(k6_http_reqs_total{name=\"reserve\", variant=~\"$variant\"}[$__rate_interval]))",
+          "legendFormat": "{{variant}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Virtual users",
+      "description": "Active VUs. With an arrival-rate executor, rising VUs mean responses are slowing down.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by (variant) (k6_vus{variant=~\"$variant\"})",
+          "legendFormat": "{{variant}} active"
+        },
+        {
+          "refId": "B",
+          "expr": "max by (variant) (k6_vus_max{variant=~\"$variant\"})",
+          "legendFormat": "{{variant}} allocated"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Dropped iterations",
+      "description": "Requests k6 could not start because all VUs were busy. Non-zero means the system under test cannot keep up with TARGET_RPS.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "ops", "min": 0 }, "overrides": [] },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (variant) (rate(k6_dropped_iterations_total{variant=~\"$variant\"}[$__rate_interval]))",
+          "legendFormat": "{{variant}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Node CPU per worker (cores)",
+      "description": "CPU seconds each ticket cluster worker burns per wall-clock second (prom-client process_cpu_seconds_total). A worker is single-threaded, so 1.0 means it is saturated and the service, not Postgres or Redis, is the bottleneck.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "decimals": 2,
+          "custom": { "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "rate(process_cpu_seconds_total{job=\"ticket\"}[30s])",
+          "legendFormat": "worker {{worker}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Event-loop lag p99 (ms)",
+      "description": "99th percentile of event-loop delay per worker, from perf_hooks.monitorEventLoopDelay, reset every scrape. Lag climbing while CPU stays under 1.0 points at long synchronous work (GC, big JSON) rather than raw load.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "fieldConfig": { "defaults": { "unit": "ms", "min": 0 }, "overrides": [] },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "nodejs_eventloop_lag_p99_seconds{job=\"ticket\"} * 1000",
+          "legendFormat": "worker {{worker}}"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Waiting for the relay (unread)",
+      "description": "Stream entries the relay group has not read yet: Redis's own lag figure for the group, via redis_exporter. This is the line that climbs while the relay is down and falls when it comes back. It is measured from Redis, so it keeps reporting during the outage. A stream the relay has never opened has no group yet, and then every entry in it is unread, so the stream's length is shown.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "redis_stream_group_lag{job=\"redis\", group=\"relay\"} or on(stream) redis_stream_length{job=\"redis\", stream=~\"ev:.*:stream\"}",
+          "legendFormat": "{{stream}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Pending entries (read, not acked)",
+      "description": "Entries a relay has read and not yet acked: the group's pending list, via redis_exporter. Near zero while the relay is healthy. If the relay is killed, whatever it was holding stays here until the restarted relay's 30s sweep claims entries that have been idle for 60s.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "redis_stream_group_messages_pending{job=\"redis\", group=\"relay\"} or on(stream) (redis_stream_length{job=\"redis\", stream=~\"ev:.*:stream\"} * 0)",
+          "legendFormat": "{{stream}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Stream length",
+      "description": "Entries in each reservation stream (XLEN), via redis_exporter. This is not the backlog: it also counts entries already relayed and not yet trimmed. The relay trims every 60s, so a sawtooth is normal; with the relay down nothing trims it and it only climbs.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "redis_stream_length{job=\"redis\", stream=~\"ev:.*:stream\"}",
+          "legendFormat": "{{stream}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Consumer lag",
+      "description": "Messages in reservations.events the order-service group has not committed yet: end of each partition minus the committed offset. Growing lag means the order service is slower than the relay.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(order_consumer_lag{job=\"order\"})",
+          "legendFormat": "total"
+        },
+        {
+          "refId": "B",
+          "expr": "order_consumer_lag{job=\"order\"}",
+          "legendFormat": "partition {{partition}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Events/sec in vs out",
+      "description": "In: entries the relay published to reservations.events. Out: events the order service handled for the first time, with duplicates it skipped shown separately. In steady state in equals out plus duplicates; dead-lettered messages are in neither out series.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
+      "fieldConfig": { "defaults": { "unit": "ops", "min": 0 }, "overrides": [] },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(relay_events_published_total{job=\"relay\"}[30s]))",
+          "legendFormat": "in (relay published)"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(order_events_processed_total{job=\"order\"}[30s]))",
+          "legendFormat": "out (order processed)"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(order_events_duplicate_total{job=\"order\"}[30s]))",
+          "legendFormat": "out (order duplicates)"
+        }
+      ]
+    }
+  ]
+}
