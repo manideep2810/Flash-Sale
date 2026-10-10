@@ -61,7 +61,7 @@ If a tile is not green after run 2, capture it anyway together with the invarian
 | [ ] | `redis-before-after.png` | `docker exec flash-sale-redis-1 redis-cli get ev:<sale>:avail` (and `:sold`, `zcard ev:<sale>:holds`) before and after | Concrete numbers behind the I1 panel |
 | [ ] | `db-state.png` | `SELECT state, count(*) FROM order_e2e."Order" GROUP BY state` and the same on `payment_e2e."Payment"` | Proof for the funnel |
 
-## Kafka UI (localhost:8080)
+## Kafka UI (localhost:8081)
 
 | Done | File | What to capture | The point |
 |---|---|---|---|

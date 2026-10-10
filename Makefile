@@ -10,6 +10,7 @@ endif
 
 # ---- Docker Compose ----------------------------------------------------------
 COMPOSE_FILE         ?= infra/docker/docker-compose.yml
+COMPOSE_ENV          := $(dir $(COMPOSE_FILE)).env
 COMPOSE_PROJECT_NAME ?= flash-sale
 DOCKER_COMPOSE       ?= docker compose -p $(COMPOSE_PROJECT_NAME) -f $(COMPOSE_FILE)
 WAIT_TIMEOUT         ?= 120
@@ -54,7 +55,11 @@ LOG_LEVEL         ?=
 help: ## List available targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-up: ## Start the stack, block until every container is healthy, then create the reservation topics
+# The gateway takes its two secrets from infra/docker/.env, which compose reads for every command.
+$(COMPOSE_ENV): $(COMPOSE_ENV).example
+	@if [ -f "$@" ]; then touch "$@"; else cp "$<" "$@" && echo "created  $@"; fi
+
+up: $(COMPOSE_ENV) ## Start the stack, block until every container is healthy, then create the reservation topics
 	$(DOCKER_COMPOSE) up -d --wait --wait-timeout $(WAIT_TIMEOUT)
 	$(TOPICS_SH)
 	@echo "✓ Stack ready"
@@ -140,8 +145,8 @@ typecheck: ## Typecheck every workspace
 check: ## Biome over the whole repo (root files included), then typecheck every workspace
 	$(PNPM) run check
 
-env: ## Create each services/<name>/.env from its .env.example (never overwrites an existing .env)
-	@for example in services/*/.env.example; do \
+env: ## Create each services/<name>/.env and infra/docker/.env from its .env.example (never overwrites an existing .env)
+	@for example in services/*/.env.example $(COMPOSE_ENV).example; do \
 		target="$${example%.example}"; \
 		if [ -f "$$target" ]; then \
 			echo "kept     $$target"; \

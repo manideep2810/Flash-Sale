@@ -1,0 +1,59 @@
+# The API gateway: the only port clients use (8080). Mounted into the envoy container by
+# infra/docker/docker-compose.yml.
+#
+# Skeleton: the listener is up and answers 404. Routes, the JWT check and the rate limits follow.
+
+admin:
+  # Stats (/stats/prometheus), clusters and the config dump. The config dump includes the JWT keys,
+  # so this port is published to 127.0.0.1 only and must never be exposed further.
+  address:
+    socket_address: { address: 0.0.0.0, port_value: 9901 }
+
+static_resources:
+  listeners:
+    - name: api
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8080 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: gateway
+                codec_type: AUTO
+                # This is the edge. The client's address is the socket's, never one a header claims.
+                use_remote_address: true
+                xff_num_trusted_hops: 0
+                # Every request gets an x-request-id here; it is passed upstream and the services log it.
+                generate_request_id: true
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          time: "%START_TIME%"
+                          request_id: "%REQ(X-REQUEST-ID)%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+                          route: "%ROUTE_NAME%"
+                          status: "%RESPONSE_CODE%"
+                          # flags says that Envoy answered and broadly why (RL = rate limited, UAEX = refused by a
+                          # filter); details says which filter: local_rate_limited is the local bucket,
+                          # request_rate_limited the global service, jwt_authn_access_denied{...} the token check.
+                          flags: "%RESPONSE_FLAGS%"
+                          details: "%RESPONSE_CODE_DETAILS%"
+                          user: "%REQ(X-USER-ID)%"
+                          client: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
+                          upstream: "%UPSTREAM_CLUSTER%"
+                          duration_ms: "%DURATION%"
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: api
+                  virtual_hosts:
+                    - name: api
+                      domains: ["*"]
+                      routes: []
