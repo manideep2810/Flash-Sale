@@ -14,6 +14,7 @@
   "dependencies": {
     "@confluentinc/kafka-javascript": "catalog:",
     "ioredis": "catalog:",
+    "jose": "catalog:",
     "pg": "catalog:"
   },
   "devDependencies": {

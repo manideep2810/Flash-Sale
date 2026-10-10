@@ -12,6 +12,7 @@
 //   RATE         reserve attempts per second (default 5000)
 //   DURATION     how long the rush lasts (default 60s)
 //   PRE_VUS / MAX_VUS   VU pool; winners sleep inside their iteration, so MAX_VUS bounds in-flight journeys
+//   ADMISSION_SECRET    must match the ticket service (see loadtest/lib/admission.js)
 //
 // Every reserve that wins a hold follows one journey, chosen up front by the user id prefix the mock
 // payment service keys on (NODE_ENV=test): 70% ok- (pays, succeeds), 10% fail- (pays, fails), 20% never pay.
@@ -20,6 +21,7 @@
 import http from "k6/http";
 import { sleep } from "k6";
 import { Counter, Trend } from "k6/metrics";
+import { ADMISSION_HEADER, mintAdmissionToken } from "./lib/admission.js";
 
 const TICKET_URL = __ENV.TICKET_URL || "http://localhost:3001";
 const ORDER_URL = __ENV.ORDER_URL || "http://localhost:3003";
@@ -82,7 +84,14 @@ export default function () {
   const reserve = http.post(
     `${TICKET_URL}/redis/reserve`,
     JSON.stringify({ eventId: EVENT_ID, userId, qty: 1 }),
-    { headers: { "content-type": "application/json" }, tags: { name: "reserve" } },
+    {
+      // The rush starts after the waiting room: each user arrives already admitted.
+      headers: {
+        "content-type": "application/json",
+        [ADMISSION_HEADER]: mintAdmissionToken(userId, EVENT_ID),
+      },
+      tags: { name: "reserve" },
+    },
   );
   reserveMs.add(reserve.timings.duration);
   if (reserve.status === 409) {

@@ -7,6 +7,11 @@ import { promisify } from "node:util";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { Redis } from "ioredis";
 import pg from "pg";
+import {
+  ADMISSION_HEADER,
+  mintAdmissionToken,
+  TEST_ADMISSION_SECRET,
+} from "../../tools/admission-token.js";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -193,7 +198,13 @@ export async function startFixture(): Promise<Fixture> {
     );
   }
 
-  const ticket = new Service("ticket", 3001, { REDIS_URL, WORKERS: "2", METRICS_PORT: "9464" });
+  // The ticket service is given the secret this harness mints admission tokens with (see reserve()).
+  const ticket = new Service("ticket", 3001, {
+    REDIS_URL,
+    WORKERS: "2",
+    METRICS_PORT: "9464",
+    ADMISSION_SECRET: TEST_ADMISSION_SECRET,
+  });
   const relay = new Service("relay", 3002, { REDIS_URL, KAFKA_BROKERS });
   const order = new Service("order", 3003, { DATABASE_URL, KAFKA_BROKERS });
   const services = [ticket, relay, order];
@@ -208,10 +219,10 @@ export async function startFixture(): Promise<Fixture> {
     throw error;
   }
 
-  const postJson = (path: string, body: unknown) =>
+  const postJson = (path: string, body: unknown, headers: Record<string, string> = {}) =>
     fetch(`${ticket.url}${path}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify(body),
     });
 
@@ -240,7 +251,13 @@ export async function startFixture(): Promise<Fixture> {
         Array.from({ length: Math.min(50, count) }, async () => {
           while (next < count) {
             const userId = `${userPrefix}-${next++}`;
-            const res = await postJson("/redis/reserve", { eventId, userId, qty: 1 });
+            // These scenarios start after the waiting room, so the harness admits each user itself.
+            const token = await mintAdmissionToken({ userId, eventId });
+            const res = await postJson(
+              "/redis/reserve",
+              { eventId, userId, qty: 1 },
+              { [ADMISSION_HEADER]: token },
+            );
             const body = await res.text();
             if (res.status === 201) {
               held++;

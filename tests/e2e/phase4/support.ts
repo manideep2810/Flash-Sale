@@ -12,6 +12,11 @@ import { promisify } from "node:util";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { Redis } from "ioredis";
 import pg from "pg";
+import {
+  ADMISSION_HEADER,
+  mintAdmissionToken,
+  TEST_ADMISSION_SECRET,
+} from "../../../tools/admission-token.js";
 
 const run = promisify(execFile);
 export const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -214,6 +219,8 @@ function procs(extra: HarnessOptions = {}) {
         WORKERS: extra.ticketWorkers ?? "2",
         METRICS_PORT: "9464",
         HOLD_TTL_SEC: String(extra.holdTtlSec ?? TIMERS.HOLD_TTL_SEC),
+        // The secret reserve() below, and the k6 run, mint admission tokens with.
+        ADMISSION_SECRET: TEST_ADMISSION_SECRET,
       },
     }),
     relay: new Proc({
@@ -404,10 +411,14 @@ export class Harness {
     return eventId;
   }
 
+  /** Reserves as a user the waiting room has admitted: the harness mints the admission token. */
   async reserve(eventId: string, userId: string, qty = 1): Promise<string | undefined> {
     const res = await fetch(`http://localhost:${PORTS.ticket}/redis/reserve`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        [ADMISSION_HEADER]: await mintAdmissionToken({ userId, eventId }),
+      },
       body: JSON.stringify({ eventId, userId, qty }),
     });
     if (res.status === 409) {

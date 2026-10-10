@@ -9,6 +9,7 @@
 // order-worker and the payment service (`make dev`).
 
 import { setTimeout as sleep } from "node:timers/promises";
+import { ADMISSION_HEADER, mintAdmissionToken } from "./admission-token.js";
 import { checkInvariants, printReport } from "./check-invariants.js";
 
 const TICKET_URL = process.env.TICKET_URL ?? "http://localhost:3001";
@@ -37,10 +38,10 @@ async function json(url: string, init?: RequestInit): Promise<{ status: number; 
   return { status: res.status, body: text ? (JSON.parse(text) as Reply) : {} };
 }
 
-const post = (url: string, body?: unknown) =>
+const post = (url: string, body?: unknown, headers: Record<string, string> = {}) =>
   json(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
@@ -63,11 +64,14 @@ async function main(): Promise<boolean> {
     throw new Error(`reset answered ${reset.status}`);
   }
 
-  const reserve = await post(`${TICKET_URL}/redis/reserve`, {
-    eventId: EVENT_ID,
-    userId: "smoke-user",
-    qty: 2,
-  });
+  // Reserve needs an admission token. This script stands in for the waiting room and mints its own,
+  // which works as long as its secret is the ticket service's (see tools/admission-token.ts).
+  const userId = "smoke-user";
+  const reserve = await post(
+    `${TICKET_URL}/redis/reserve`,
+    { eventId: EVENT_ID, userId, qty: 2 },
+    { [ADMISSION_HEADER]: await mintAdmissionToken({ userId, eventId: EVENT_ID }) },
+  );
   if (reserve.status !== 201) {
     throw new Error(`reserve answered ${reserve.status} ${JSON.stringify(reserve.body)}`);
   }

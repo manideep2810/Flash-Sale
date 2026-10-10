@@ -599,6 +599,9 @@ importers:
       ioredis:
         specifier: 'catalog:'
         version: 6.0.0
+      jose:
+        specifier: 'catalog:'
+        version: 6.2.12
       pg:
         specifier: 'catalog:'
         version: 8.23.0
