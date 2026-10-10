@@ -1,5 +1,6 @@
 import cluster from "node:cluster";
 import { createLogger } from "@flash/observability";
+import { createRequireAdmission } from "./admission.js";
 import { getPool } from "./baseline/db.js";
 import { config } from "./config.js";
 import { collectWorkerMetrics, startMetricsServer } from "./metrics.js";
@@ -93,12 +94,19 @@ async function runWorker(): Promise<void> {
     log.info("reserve.lua loaded", { sha: reserveScript.sha, connections: redisPool.size });
   }
 
+  // The secret is read and encoded once, here, at startup.
+  const requireAdmission = createRequireAdmission({
+    secret: config.ADMISSION_SECRET,
+    logger: log,
+  });
+
   startServer({
     port: config.PORT,
     logger: log,
     baselinePool,
     reserveScript,
     redisPool,
+    requireAdmission,
     closeClients: async () => {
       await Promise.all([baselinePool?.end(), redisPool?.quit()]);
     },

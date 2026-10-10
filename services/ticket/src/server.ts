@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "@flash/observability";
 import express, { type Express } from "express";
 import type { Pool } from "pg";
+import type { RequireAdmission } from "./admission.js";
 import { createBaselineRouter } from "./baseline/routes.js";
 import type { RedisPool, ReserveScript } from "./redis/index.js";
 import { createRedisRouter } from "./routes.js";
@@ -18,12 +19,14 @@ export interface AppOptions {
   /** Both required to mount POST /redis/reserve and POST /redis/reset. */
   reserveScript?: ReserveScript;
   redisPool?: RedisPool;
+  /** Required whenever the two above are given: /redis/reserve is never mounted without its check. */
+  requireAdmission?: RequireAdmission;
 }
 
 export function createApp(
   logger: Logger,
   state: AppState = { shuttingDown: false },
-  { baselinePool, reserveScript, redisPool }: AppOptions = {},
+  { baselinePool, reserveScript, redisPool, requireAdmission }: AppOptions = {},
 ): Express {
   const app = express();
   app.disable("x-powered-by");
@@ -56,7 +59,13 @@ export function createApp(
   }
 
   if (reserveScript && redisPool) {
-    app.use(createRedisRouter({ script: reserveScript, pool: redisPool, logger }));
+    if (!requireAdmission) {
+      // Fail closed: leaving the check out must be a decision (admissionNotRequired), not an omission.
+      throw new Error("requireAdmission is required to mount /redis/reserve");
+    }
+    app.use(
+      createRedisRouter({ script: reserveScript, pool: redisPool, logger, requireAdmission }),
+    );
   }
 
   return app;
@@ -88,22 +97,23 @@ export function startServer({
   baselinePool,
   reserveScript,
   redisPool,
+  requireAdmission,
   backlog = 4096,
 }: StartOptions): Server {
   const state: AppState = { shuttingDown: false };
 
-  const server = createApp(logger, state, { baselinePool, reserveScript, redisPool }).listen(
-    port,
-    "0.0.0.0",
-    backlog,
-    (error) => {
-      if (error) {
-        logger.error("server failed to start", error);
-        process.exit(1);
-      }
-      logger.info("server started", { port });
-    },
-  );
+  const server = createApp(logger, state, {
+    baselinePool,
+    reserveScript,
+    redisPool,
+    requireAdmission,
+  }).listen(port, "0.0.0.0", backlog, (error) => {
+    if (error) {
+      logger.error("server failed to start", error);
+      process.exit(1);
+    }
+    logger.info("server started", { port });
+  });
 
   // A second SIGTERM falls through to Node's default handler and kills the process immediately.
   process.once("SIGTERM", async (signal) => {
