@@ -11,7 +11,9 @@
 # What a request passes through, in order:
 #   1. jwt_authn          the session on every /api route but the login, plus the admission token on
 #                         reserve. A request that fails here never reaches a service.
-#   2. router
+#   2. global rate limit  per user and per client address, counted by the ratelimit service
+#                         (infra/ratelimit/config/flashsale.yaml). Fails open.
+#   3. router
 #
 # The services check the session and the admission token again themselves. This is the first
 # check, not the only one.
@@ -76,6 +78,16 @@ static_resources:
                           comparison: { op: EQ, value: { default_value: 401, runtime_key: gateway.local_reply.unauthenticated } }
                       body_format_override:
                         json_format: { code: UNAUTHENTICATED, message: "%LOCAL_REPLY_BODY%" }
+                    - filter:
+                        status_code_filter:
+                          comparison: { op: EQ, value: { default_value: 429, runtime_key: gateway.local_reply.rate_limited } }
+                      # Retry-After: the global limit says how long until its window resets (x-ratelimit-reset, in
+                      # seconds). ADD_IF_ABSENT leaves alone the "1" a local-limit reply already carries.
+                      headers_to_add:
+                        - append_action: ADD_IF_ABSENT
+                          header: { key: retry-after, value: "%RESP(X-RATELIMIT-RESET)%" }
+                      body_format_override:
+                        json_format: { code: RATE_LIMITED, message: "too many requests, retry later" }
                 http_filters:
                   # JWT check. Two providers, both HS256 with a key from the environment (entrypoint.sh): a JWK that
                   # names its algorithm only verifies tokens signed with that algorithm, so `none` and HS512 fail.
@@ -117,6 +129,21 @@ static_resources:
                                 - provider_name: admission
                         - match: { prefix: /api/ }
                           requires: { provider_name: session }
+                  # Global rate limit: asks the ratelimit service about the descriptors of the matched route.
+                  - name: envoy.filters.http.ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit
+                      domain: flashsale
+                      # Fail OPEN: if the ratelimit service is slow or down, requests go through. The JWT check
+                      # above and the services' own checks still stand, and the admission token still gates reserve.
+                      failure_mode_deny: false
+                      timeout: 0.05s
+                      # x-ratelimit-limit / -remaining / -reset on the responses of limited routes.
+                      enable_x_ratelimit_headers: DRAFT_VERSION_03
+                      rate_limit_service:
+                        transport_api_version: V3
+                        grpc_service:
+                          envoy_grpc: { cluster_name: ratelimit }
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -129,6 +156,7 @@ static_resources:
                       # are never retried.
                       routes:
                         # POST /api/auth/dev-login -> order-api /auth/dev-login
+                        # No session yet, so the global limit is per client address only.
                         - name: login
                           match:
                             path: /api/auth/dev-login
@@ -137,6 +165,10 @@ static_resources:
                             cluster: order-api
                             prefix_rewrite: /auth/dev-login
                             timeout: 2s
+                            rate_limits:
+                              - actions:
+                                  - generic_key: { descriptor_value: login }
+                                  - remote_address: {}
                         # POST /api/queue/:eventId/join -> queue-svc /queue/:eventId/join
                         - name: join
                           match:
@@ -146,6 +178,13 @@ static_resources:
                             cluster: queue-svc
                             regex_rewrite: { pattern: { regex: "^/api/" }, substitution: / }
                             timeout: 2s
+                            rate_limits:
+                              - actions:
+                                  - generic_key: { descriptor_value: join }
+                                  - request_headers: { header_name: x-user-id, descriptor_key: user_id }
+                              - actions:
+                                  - generic_key: { descriptor_value: join }
+                                  - remote_address: {}
                         # GET /api/queue/:eventId/status -> queue-svc /queue/:eventId/status
                         - name: status
                           match:
@@ -155,6 +194,13 @@ static_resources:
                             cluster: queue-svc
                             regex_rewrite: { pattern: { regex: "^/api/" }, substitution: / }
                             timeout: 2s
+                            rate_limits:
+                              - actions:
+                                  - generic_key: { descriptor_value: status }
+                                  - request_headers: { header_name: x-user-id, descriptor_key: user_id }
+                              - actions:
+                                  - generic_key: { descriptor_value: status }
+                                  - remote_address: {}
                         # POST /api/reserve -> ticket service /redis/reserve
                         - name: reserve
                           match:
@@ -164,7 +210,15 @@ static_resources:
                             cluster: ticket
                             prefix_rewrite: /redis/reserve
                             timeout: 1s
+                            rate_limits:
+                              - actions:
+                                  - generic_key: { descriptor_value: reserve }
+                                  - request_headers: { header_name: x-user-id, descriptor_key: user_id }
+                              - actions:
+                                  - generic_key: { descriptor_value: reserve }
+                                  - remote_address: {}
                         # /api/orders/* -> order-api /orders/*
+                        # No rate limit of either kind.
                         - name: orders
                           match:
                             prefix: /api/orders/
@@ -238,6 +292,32 @@ static_resources:
           unhealthy_threshold: 2
           healthy_threshold: 1
           http_health_check: { path: /readyz }
+      outlier_detection:
+        consecutive_5xx: 5
+        base_ejection_time: 30s
+    # The ratelimit service, in compose. gRPC, so HTTP/2.
+    - name: ratelimit
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 1s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: ratelimit
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: ratelimit, port_value: 8081 }
+      health_checks:
+        - timeout: 1s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          grpc_health_check: {}
       outlier_detection:
         consecutive_5xx: 5
         base_ejection_time: 30s
