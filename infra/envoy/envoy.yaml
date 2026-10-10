@@ -1,7 +1,11 @@
 # The API gateway: the only port clients use (8080). Mounted into the envoy container by
 # infra/docker/docker-compose.yml.
 #
-# Skeleton: the listener is up and answers 404. Routes, the JWT check and the rate limits follow.
+# The services run on the host (`make dev`), not in compose, so the clusters at the bottom point at
+# host.docker.internal. Each service keeps its own paths; the routes rewrite /api/... onto them.
+#
+# What a request passes through, in order:
+#   1. router
 
 admin:
   # Stats (/stats/prometheus), clusters and the config dump. The config dump includes the JWT keys,
@@ -56,4 +60,119 @@ static_resources:
                   virtual_hosts:
                     - name: api
                       domains: ["*"]
-                      routes: []
+                      # Each route's name is also its rate-limit key and its label in the metrics. POST routes
+                      # are never retried.
+                      routes:
+                        # POST /api/auth/dev-login -> order-api /auth/dev-login
+                        - name: login
+                          match:
+                            path: /api/auth/dev-login
+                            headers: [{ name: ":method", string_match: { exact: POST } }]
+                          route:
+                            cluster: order-api
+                            prefix_rewrite: /auth/dev-login
+                            timeout: 2s
+                        # POST /api/queue/:eventId/join -> queue-svc /queue/:eventId/join
+                        - name: join
+                          match:
+                            safe_regex: { regex: "/api/queue/[^/]+/join" }
+                            headers: [{ name: ":method", string_match: { exact: POST } }]
+                          route:
+                            cluster: queue-svc
+                            regex_rewrite: { pattern: { regex: "^/api/" }, substitution: / }
+                            timeout: 2s
+                        # GET /api/queue/:eventId/status -> queue-svc /queue/:eventId/status
+                        - name: status
+                          match:
+                            safe_regex: { regex: "/api/queue/[^/]+/status" }
+                            headers: [{ name: ":method", string_match: { exact: GET } }]
+                          route:
+                            cluster: queue-svc
+                            regex_rewrite: { pattern: { regex: "^/api/" }, substitution: / }
+                            timeout: 2s
+                        # POST /api/reserve -> ticket service /redis/reserve
+                        - name: reserve
+                          match:
+                            path: /api/reserve
+                            headers: [{ name: ":method", string_match: { exact: POST } }]
+                          route:
+                            cluster: ticket
+                            prefix_rewrite: /redis/reserve
+                            timeout: 1s
+                        # /api/orders/* -> order-api /orders/*
+                        - name: orders
+                          match:
+                            prefix: /api/orders/
+                          route:
+                            cluster: order-api
+                            prefix_rewrite: /orders/
+                            timeout: 3s
+                        # The web app arrives with the Next.js pages (item 5):
+                        # - name: web
+                        #   match: { prefix: / }
+                        #   route: { cluster: web }
+
+  clusters:
+    # order-api: the login and /orders. services/order, PORT 3003.
+    - name: order-api
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: order-api
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: host.docker.internal, port_value: 3003 }
+      health_checks:
+        - timeout: 1s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check: { path: /healthz/ready }
+      outlier_detection:
+        consecutive_5xx: 5
+        base_ejection_time: 30s
+    # The reservation API. services/ticket, PORT 3001.
+    - name: ticket
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: ticket
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: host.docker.internal, port_value: 3001 }
+      health_checks:
+        - timeout: 1s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check: { path: /healthz/ready }
+      outlier_detection:
+        consecutive_5xx: 5
+        base_ejection_time: 30s
+    # The waiting room. services/queue, PORT 4100.
+    - name: queue-svc
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: queue-svc
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: host.docker.internal, port_value: 4100 }
+      health_checks:
+        - timeout: 1s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check: { path: /readyz }
+      outlier_detection:
+        consecutive_5xx: 5
+        base_ejection_time: 30s

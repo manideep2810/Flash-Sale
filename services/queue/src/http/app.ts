@@ -57,6 +57,8 @@ export function createApp({
         path: req.originalUrl,
         status: res.statusCode,
         durationMs: Math.round(performance.now() - startedAt),
+        // Set by the gateway on every request it forwards; the same id is in its access log.
+        requestId: req.get("x-request-id"),
       });
     });
     next();
