@@ -4,16 +4,18 @@
 # THIS FILE IS A TEMPLATE. entrypoint.sh fills in each dollar-brace placeholder from the
 # container's environment at start and runs Envoy on the result, so no secret is committed here:
 #   ${SESSION_JWK_K}, ${ADMISSION_JWK_K}   the two HS256 keys, from SESSION_SECRET and ADMISSION_SECRET
+#   ${LOCAL_*}                             the local rate-limit numbers, from limits.env
 #
 # The services run on the host (`make dev`), not in compose, so the clusters at the bottom point at
 # host.docker.internal. Each service keeps its own paths; the routes rewrite /api/... onto them.
 #
 # What a request passes through, in order:
-#   1. jwt_authn          the session on every /api route but the login, plus the admission token on
+#   1. local rate limit   one token bucket per route for this Envoy: overload protection, whoever asks
+#   2. jwt_authn          the session on every /api route but the login, plus the admission token on
 #                         reserve. A request that fails here never reaches a service.
-#   2. global rate limit  per user and per client address, counted by the ratelimit service
+#   3. global rate limit  per user and per client address, counted by the ratelimit service
 #                         (infra/ratelimit/config/flashsale.yaml). Fails open.
-#   3. router
+#   4. router
 #
 # The services check the session and the admission token again themselves. This is the first
 # check, not the only one.
@@ -89,6 +91,12 @@ static_resources:
                       body_format_override:
                         json_format: { code: RATE_LIMITED, message: "too many requests, retry later" }
                 http_filters:
+                  # 1. Local rate limit. Nothing is limited here; each route that has a limit carries its own bucket
+                  #    (typed_per_filter_config on the route), and the numbers come from limits.env.
+                  - name: envoy.filters.http.local_ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                      stat_prefix: local_rate_limit
                   # JWT check. Two providers, both HS256 with a key from the environment (entrypoint.sh): a JWK that
                   # names its algorithm only verifies tokens signed with that algorithm, so `none` and HS512 fail.
                   - name: envoy.filters.http.jwt_authn
@@ -169,6 +177,21 @@ static_resources:
                               - actions:
                                   - generic_key: { descriptor_value: login }
                                   - remote_address: {}
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_login
+                              token_bucket:
+                                max_tokens: ${LOCAL_LOGIN_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_LOGIN_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
                         # POST /api/queue/:eventId/join -> queue-svc /queue/:eventId/join
                         - name: join
                           match:
@@ -185,6 +208,21 @@ static_resources:
                               - actions:
                                   - generic_key: { descriptor_value: join }
                                   - remote_address: {}
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_join
+                              token_bucket:
+                                max_tokens: ${LOCAL_JOIN_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_JOIN_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
                         # GET /api/queue/:eventId/status -> queue-svc /queue/:eventId/status
                         - name: status
                           match:
@@ -201,6 +239,21 @@ static_resources:
                               - actions:
                                   - generic_key: { descriptor_value: status }
                                   - remote_address: {}
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_status
+                              token_bucket:
+                                max_tokens: ${LOCAL_STATUS_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_STATUS_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
                         # POST /api/reserve -> ticket service /redis/reserve
                         - name: reserve
                           match:
@@ -217,6 +270,21 @@ static_resources:
                               - actions:
                                   - generic_key: { descriptor_value: reserve }
                                   - remote_address: {}
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_reserve
+                              token_bucket:
+                                max_tokens: ${LOCAL_RESERVE_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_RESERVE_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
                         # /api/orders/* -> order-api /orders/*
                         # No rate limit of either kind.
                         - name: orders
