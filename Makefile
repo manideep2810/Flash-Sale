@@ -49,7 +49,7 @@ TARGET_RPS        ?=
 LOG_LEVEL         ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline test-order-db test-payment-db smoke-phase4 check-invariants loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean
+.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline test-order-db test-payment-db test-queue smoke-phase4 check-invariants loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean
 
 help: ## List available targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -108,6 +108,9 @@ test-order-db: ## Run the order payment-claim/timeout tests against a throwaway 
 
 test-payment-db: ## Run the payment-mock request-handling tests against a throwaway `payment_test` schema in the local postgres
 	DATABASE_URL="$(DATABASE_URL_BASE)?schema=payment_test" $(PNPM) -C services/payment-mock run test:db
+
+test-queue: ## Run the waiting-room tests (queue-svc and the admitter) against the local redis
+	REDIS_URL="$(REDIS_URL)" $(PNPM) -C services/queue run test
 
 smoke-phase4: ## reserve -> pay -> wait for the payment -> check invariants (needs `make dev` and the stack up)
 	$(PNPM) -C tools run smoke-phase4
