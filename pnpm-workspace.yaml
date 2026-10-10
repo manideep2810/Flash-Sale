@@ -16,6 +16,7 @@ catalog:
   express: ^5.2.1
   pg: ^8.16.3
   ioredis: ^6.0.0
+  jose: ^6.2.12
   kafkajs: ^2.2.4
   prisma: ^7.10.0
   prom-client: ^15.1.3

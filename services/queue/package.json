@@ -16,6 +16,8 @@
     "@flash/observability": "workspace:*",
     "express": "catalog:",
     "ioredis": "catalog:",
+    "jose": "catalog:",
+    "prom-client": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
