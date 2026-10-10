@@ -96,6 +96,16 @@ static_resources:
                           comparison: { op: EQ, value: { default_value: 401, runtime_key: gateway.local_reply.unauthenticated } }
                       body_format_override:
                         json_format: { code: UNAUTHENTICATED, message: "%LOCAL_REPLY_BODY%" }
+                    # jwt_authn answers 403 for one failure only: a token that verifies but was issued for another
+                    # audience (an admission token offered as a session, say). To the caller that is the same as any
+                    # other token that is not a session, so it is answered the same way. Envoy makes no other 403 of
+                    # its own, and a 403 from a service is not a local reply and passes through untouched.
+                    - filter:
+                        status_code_filter:
+                          comparison: { op: EQ, value: { default_value: 403, runtime_key: gateway.local_reply.wrong_audience } }
+                      status_code: 401
+                      body_format_override:
+                        json_format: { code: UNAUTHENTICATED, message: "%LOCAL_REPLY_BODY%" }
                     - filter:
                         status_code_filter:
                           comparison: { op: EQ, value: { default_value: 429, runtime_key: gateway.local_reply.rate_limited } }
