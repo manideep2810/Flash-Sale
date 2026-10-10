@@ -72,6 +72,22 @@ static_resources:
                           client: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
                           upstream: "%UPSTREAM_CLUSTER%"
                           duration_ms: "%DURATION%"
+                  # One counter per (route, status, reason), which is how Prometheus gets 401s and 429s per route:
+                  # Envoy's own per-route stats come from the router, and a request refused by an earlier filter
+                  # never gets that far. `reason` is the response-code detail, so a 429 from the local bucket
+                  # (local_rate_limited) and one from the global service (request_rate_limited) stay apart.
+                  - name: envoy.access_loggers.stats
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stats.v3.Config
+                      stat_prefix: gateway
+                      counters:
+                        - stat:
+                            name: requests
+                            tags:
+                              - { name: route, value_format: "%ROUTE_NAME%" }
+                              - { name: code, value_format: "%RESPONSE_CODE%" }
+                              - { name: reason, value_format: "%RESPONSE_CODE_DETAILS%" }
+                          value_fixed: 1
                 # What Envoy answers when it refuses a request itself: JSON {code, message}, like the services.
                 local_reply_config:
                   mappers:
