@@ -20,6 +20,7 @@
     "@prisma/client": "catalog:",
     "express": "catalog:",
     "ioredis": "catalog:",
+    "jose": "catalog:",
     "pg": "catalog:",
     "prom-client": "catalog:",
     "winston": "catalog:",
