@@ -7,6 +7,7 @@
     "test:e2e": "vitest run",
     "load": "tsx phase4/run-load.ts",
     "test:phase4": "vitest run --config vitest.phase4.config.ts",
+    "test:phase5": "vitest run --config vitest.phase5.config.ts",
     "lint": "biome check --config-path=../../.biomerc.json .",
     "typecheck": "tsc --noEmit"
   },
