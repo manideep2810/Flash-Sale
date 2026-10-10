@@ -10,6 +10,7 @@ const base = {
   NODE_ENV: "development",
   PORT: "3001",
   LOG_LEVEL: "error",
+  SESSION_SECRET: "test-only-session-secret-0123456789abcdef",
   ADMISSION_SECRET: SECRET,
 };
 
@@ -26,6 +27,18 @@ describe("ticket config", () => {
     ).toHaveLength(32);
     // Bytes, not characters: 16 two-byte characters are enough.
     expect(() => parseConfig({ ...base, ADMISSION_SECRET: "é".repeat(16) })).not.toThrow();
+  });
+
+  it("rejects a missing SESSION_SECRET, and one under 32 bytes", () => {
+    const { SESSION_SECRET: _omitted, ...withoutSecret } = base;
+    expect(() => parseConfig(withoutSecret)).toThrow(/SESSION_SECRET/);
+    expect(() => parseConfig({ ...base, SESSION_SECRET: "x".repeat(31) })).toThrow(
+      /at least 32 bytes/,
+    );
+    // Needed with the admission check off as well: that flag does not turn off the login.
+    expect(() => parseConfig({ ...withoutSecret, REQUIRE_ADMISSION: "false" })).toThrow(
+      /SESSION_SECRET/,
+    );
   });
 
   it("requires admission unless REQUIRE_ADMISSION says otherwise", () => {

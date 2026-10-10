@@ -13,10 +13,11 @@ import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { Redis } from "ioredis";
 import pg from "pg";
 import {
-  ADMISSION_HEADER,
-  mintAdmissionToken,
+  bearer,
+  reserveHeaders,
   TEST_ADMISSION_SECRET,
-} from "../../../tools/admission-token.js";
+  TEST_SESSION_SECRET,
+} from "../../../tools/tokens.js";
 
 const run = promisify(execFile);
 export const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -186,8 +187,8 @@ export interface HarnessOptions {
 function procs(extra: HarnessOptions = {}) {
   const timers = Object.fromEntries(Object.entries(TIMERS).map(([k, v]) => [k, String(v)]));
   const orderEnv = {
-    // order-api signs sessions and will not start without a secret.
-    SESSION_SECRET: process.env.SESSION_SECRET ?? "local-dev-only-session-secret-0123456789abcdef0",
+    // The secret the harness (and the k6 run) mint sessions with.
+    SESSION_SECRET: TEST_SESSION_SECRET,
     DATABASE_URL: ORDER_DB,
     KAFKA_BROKERS,
     REDIS_URL,
@@ -221,7 +222,8 @@ function procs(extra: HarnessOptions = {}) {
         WORKERS: extra.ticketWorkers ?? "2",
         METRICS_PORT: "9464",
         HOLD_TTL_SEC: String(extra.holdTtlSec ?? TIMERS.HOLD_TTL_SEC),
-        // The secret reserve() below, and the k6 run, mint admission tokens with.
+        // The secrets reserve() below, and the k6 run, mint their tokens with.
+        SESSION_SECRET: TEST_SESSION_SECRET,
         ADMISSION_SECRET: TEST_ADMISSION_SECRET,
       },
     }),
@@ -280,6 +282,8 @@ export async function waitFor(
 }
 
 // ---- The harness: stack + clients ----------------------------------------------------------------
+
+const HARNESS_USER = "e2e-harness";
 
 const ORDER_TABLE = `"order_e2e"."Order"`;
 const PROCESSED_TABLE = `"order_e2e"."ProcessedEvent"`;
@@ -413,15 +417,12 @@ export class Harness {
     return eventId;
   }
 
-  /** Reserves as a user the waiting room has admitted: the harness mints the admission token. */
+  /** Reserves as `userId`, logged in and admitted: the harness mints the session and the admission. */
   async reserve(eventId: string, userId: string, qty = 1): Promise<string | undefined> {
     const res = await fetch(`http://localhost:${PORTS.ticket}/redis/reserve`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        [ADMISSION_HEADER]: await mintAdmissionToken({ userId, eventId }),
-      },
-      body: JSON.stringify({ eventId, userId, qty }),
+      headers: { "content-type": "application/json", ...(await reserveHeaders(userId, eventId)) },
+      body: JSON.stringify({ eventId, qty }),
     });
     if (res.status === 409) {
       return undefined;
@@ -446,15 +447,19 @@ export class Harness {
     return id;
   }
 
-  pay(orderId: string): Promise<Response> {
+  // The order API wants a session but does not check whose order it is, so the harness calls it as
+  // one user of its own.
+  async pay(orderId: string): Promise<Response> {
     return fetch(`http://localhost:${PORTS.orderApi}/orders/${encodeURIComponent(orderId)}/pay`, {
       method: "POST",
+      headers: { authorization: await bearer(HARNESS_USER) },
     });
   }
 
   async apiOrder(orderId: string): Promise<{ state: string } | undefined> {
     const res = await fetch(
       `http://localhost:${PORTS.orderApi}/orders/${encodeURIComponent(orderId)}`,
+      { headers: { authorization: await bearer(HARNESS_USER) } },
     );
     return res.status === 200 ? ((await res.json()) as { state: string }) : undefined;
   }

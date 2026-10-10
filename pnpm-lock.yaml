@@ -443,6 +443,9 @@ importers:
 
   services/queue:
     dependencies:
+      '@flash/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@flash/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -532,6 +535,9 @@ importers:
 
   services/ticket:
     dependencies:
+      '@flash/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@flash/config':
         specifier: workspace:*
         version: link:../../packages/config

@@ -1,3 +1,4 @@
+import { getCallerId } from "@flash/auth";
 import type { Logger } from "@flash/observability";
 import {
   type ErrorRequestHandler,
@@ -6,15 +7,14 @@ import {
   type Response,
   Router,
 } from "express";
-import { devUser, userIdOf } from "../auth/devUser.js";
 import { queueJoins, queueStatusRequests } from "../metrics.js";
 import { EventNotFoundError, NotOpenError, type QueueService } from "../queue/service.js";
 import { QueueUnavailableError } from "../redis/client.js";
 
 export interface QueueRouterOptions {
   service: QueueService;
-  /** Decides whether X-Dev-User is trusted (src/auth/devUser.ts). */
-  nodeEnv: string;
+  /** requireSession() from @flash/auth: both routes need a caller, and it is who the session says. */
+  authenticate: RequestHandler;
 }
 
 type EventParams = { eventId: string };
@@ -26,9 +26,8 @@ const UNAVAILABLE_LOG_MS = 5_000;
 //
 // The counters are moved after the service answers, so their `event` label only ever holds an event
 // that exists, not whatever a caller put in the URL.
-export function createQueueRouter({ service, nodeEnv }: QueueRouterOptions): Router {
+export function createQueueRouter({ service, authenticate }: QueueRouterOptions): Router {
   const router = Router();
-  const identify = devUser(nodeEnv);
 
   /**
    * POST /queue/:eventId/join
@@ -40,10 +39,10 @@ export function createQueueRouter({ service, nodeEnv }: QueueRouterOptions): Rou
    */
   router.post(
     "/queue/:eventId/join",
-    identify,
+    authenticate,
     async (req: Request<EventParams>, res: Response) => {
       const { eventId } = req.params;
-      const result = await service.join(eventId, userIdOf(res));
+      const result = await service.join(eventId, getCallerId(req));
       queueJoins.inc({ event: eventId });
       res.json(result);
     },
@@ -58,10 +57,10 @@ export function createQueueRouter({ service, nodeEnv }: QueueRouterOptions): Rou
    */
   router.get(
     "/queue/:eventId/status",
-    identify,
+    authenticate,
     async (req: Request<EventParams>, res: Response) => {
       const { eventId } = req.params;
-      const result = await service.status(eventId, userIdOf(res));
+      const result = await service.status(eventId, getCallerId(req));
       queueStatusRequests.inc({ event: eventId, status: result.status });
       res.json(result);
     },

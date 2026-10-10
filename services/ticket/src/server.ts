@@ -1,7 +1,7 @@
 import type { Server } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "@flash/observability";
-import express, { type Express } from "express";
+import express, { type Express, type RequestHandler } from "express";
 import type { Pool } from "pg";
 import type { RequireAdmission } from "./admission.js";
 import { createBaselineRouter } from "./baseline/routes.js";
@@ -19,14 +19,15 @@ export interface AppOptions {
   /** Both required to mount POST /redis/reserve and POST /redis/reset. */
   reserveScript?: ReserveScript;
   redisPool?: RedisPool;
-  /** Required whenever the two above are given: /redis/reserve is never mounted without its check. */
+  /** Required whenever the two above are given: /redis/reserve is never mounted without its checks. */
+  authenticate?: RequestHandler;
   requireAdmission?: RequireAdmission;
 }
 
 export function createApp(
   logger: Logger,
   state: AppState = { shuttingDown: false },
-  { baselinePool, reserveScript, redisPool, requireAdmission }: AppOptions = {},
+  { baselinePool, reserveScript, redisPool, authenticate, requireAdmission }: AppOptions = {},
 ): Express {
   const app = express();
   app.disable("x-powered-by");
@@ -59,12 +60,18 @@ export function createApp(
   }
 
   if (reserveScript && redisPool) {
-    if (!requireAdmission) {
-      // Fail closed: leaving the check out must be a decision (admissionNotRequired), not an omission.
-      throw new Error("requireAdmission is required to mount /redis/reserve");
+    if (!authenticate || !requireAdmission) {
+      // Fail closed: leaving a check out must be a decision (admissionNotRequired), not an omission.
+      throw new Error("authenticate and requireAdmission are required to mount /redis/reserve");
     }
     app.use(
-      createRedisRouter({ script: reserveScript, pool: redisPool, logger, requireAdmission }),
+      createRedisRouter({
+        script: reserveScript,
+        pool: redisPool,
+        logger,
+        authenticate,
+        requireAdmission,
+      }),
     );
   }
 
@@ -97,6 +104,7 @@ export function startServer({
   baselinePool,
   reserveScript,
   redisPool,
+  authenticate,
   requireAdmission,
   backlog = 4096,
 }: StartOptions): Server {
@@ -106,6 +114,7 @@ export function startServer({
     baselinePool,
     reserveScript,
     redisPool,
+    authenticate,
     requireAdmission,
   }).listen(port, "0.0.0.0", backlog, (error) => {
     if (error) {

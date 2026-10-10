@@ -3,8 +3,10 @@ import { once } from "node:events";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
+import { requireSession } from "@flash/auth";
 import { createLogger } from "@flash/observability";
 import type { Counter, Gauge } from "prom-client";
+import { bearer, TEST_SESSION_SECRET } from "../../../tools/tokens.js";
 import { type Admitter, createAdmitter } from "../src/admitter/loop.js";
 import { createEventConfigs } from "../src/config/events.js";
 import { createApp } from "../src/http/app.js";
@@ -72,29 +74,32 @@ export interface SeededEvent {
 export interface Harness {
   redis: Redis;
   scripts: Scripts;
-  /** queue-svc with NODE_ENV=test, so X-Dev-User is trusted. */
+  /** queue-svc. A call made as a user carries that user's session. */
   baseUrl: string;
   /** Redis's clock in ms: the one join.lua, status.lua and admit.lua read. */
   redisNow(): Promise<number>;
   seedEvent(options?: SeedOptions): Promise<SeededEvent>;
   join(eventId: string, userId?: string): Promise<HttpResult>;
   status(eventId: string, userId?: string): Promise<HttpResult>;
-  /** A second queue-svc with the given NODE_ENV, closed with the harness. */
-  serve(nodeEnv: string): Promise<string>;
   /** A new admitter, as a restarted process would be: no memory of the last one. Stopped on close. */
   newAdmitter(): Admitter;
   close(): Promise<void>;
 }
 
+/** As `userId`, logged in. With no userId the request carries no session, unless `headers` adds one. */
 export async function request(
   baseUrl: string,
   method: "GET" | "POST",
   path: string,
   userId?: string,
+  headers: Record<string, string> = {},
 ): Promise<HttpResult> {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: userId === undefined ? {} : { "x-dev-user": userId },
+    headers: {
+      ...(userId === undefined ? {} : { authorization: await bearer(userId) }),
+      ...headers,
+    },
   });
   return { status: res.status, body: (await res.json()) as Reply };
 }
@@ -128,15 +133,18 @@ export async function createHarness(): Promise<Harness> {
   const admitters: Admitter[] = [];
   const eventIds: string[] = [];
 
-  async function serve(nodeEnv: string): Promise<string> {
-    const app = createApp({ logger, routes: createQueueRouter({ service, nodeEnv }) });
+  async function serve(): Promise<string> {
+    const app = createApp({
+      logger,
+      routes: createQueueRouter({ service, authenticate: requireSession(TEST_SESSION_SECRET) }),
+    });
     const server = app.listen(0, "127.0.0.1");
     await once(server, "listening");
     servers.push(server);
     return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   }
 
-  const baseUrl = await serve("test");
+  const baseUrl = await serve();
 
   return {
     redis,
@@ -175,7 +183,6 @@ export async function createHarness(): Promise<Harness> {
 
     join: (eventId, userId) => request(baseUrl, "POST", `/queue/${eventId}/join`, userId),
     status: (eventId, userId) => request(baseUrl, "GET", `/queue/${eventId}/status`, userId),
-    serve,
 
     newAdmitter() {
       const admitter = createAdmitter({ redis, scripts, events, logger, eventsKey });

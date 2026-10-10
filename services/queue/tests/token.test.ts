@@ -44,15 +44,28 @@ describe("env", () => {
     REDIS_URL: "redis://localhost:6380",
   };
 
+  const SESSION = "test-only-session-secret-0123456789abcdef";
+  const secrets = { SESSION_SECRET: SESSION, ADMISSION_SECRET: SECRET };
+
   it("refuses to boot queue-svc with a missing or short ADMISSION_SECRET", () => {
-    expect(() => loadServerEnv(base)).toThrow(/ADMISSION_SECRET/);
-    expect(() => loadServerEnv({ ...base, ADMISSION_SECRET: "too-short" })).toThrow(
+    const withSession = { ...base, SESSION_SECRET: SESSION };
+    expect(() => loadServerEnv(withSession)).toThrow(/ADMISSION_SECRET/);
+    expect(() => loadServerEnv({ ...withSession, ADMISSION_SECRET: "too-short" })).toThrow(
       /at least 32 bytes/,
     );
-    expect(loadServerEnv({ ...base, ADMISSION_SECRET: SECRET }).ADMISSION_SECRET).toBe(SECRET);
+    expect(loadServerEnv({ ...base, ...secrets }).ADMISSION_SECRET).toBe(SECRET);
   });
 
-  it("boots the admitter without the secret, on its own port", () => {
+  it("refuses to boot queue-svc with a missing or short SESSION_SECRET", () => {
+    const withAdmission = { ...base, ADMISSION_SECRET: SECRET };
+    expect(() => loadServerEnv(withAdmission)).toThrow(/SESSION_SECRET/);
+    expect(() => loadServerEnv({ ...withAdmission, SESSION_SECRET: "too-short" })).toThrow(
+      /at least 32 bytes/,
+    );
+    expect(loadServerEnv({ ...base, ...secrets }).SESSION_SECRET).toBe(SESSION);
+  });
+
+  it("boots the admitter without either secret, on its own port", () => {
     expect(loadAdmitterEnv(base).ADMITTER_PORT).toBe(3011);
     expect(() => loadAdmitterEnv({ ...base, REDIS_URL: undefined })).toThrow(/REDIS_URL/);
   });

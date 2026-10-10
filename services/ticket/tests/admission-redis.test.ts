@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { requireSession } from "@flash/auth";
 import { createLogger } from "@flash/observability";
 import {
   afterAll,
@@ -12,7 +13,12 @@ import {
   type MockInstance,
   vi,
 } from "vitest";
-import { mintAdmissionToken, TEST_ADMISSION_SECRET } from "../../../tools/admission-token.js";
+import {
+  bearer,
+  mintAdmissionToken,
+  TEST_ADMISSION_SECRET,
+  TEST_SESSION_SECRET,
+} from "../../../tools/tokens.js";
 import { createRequireAdmission } from "../src/admission.js";
 import {
   createRedisPool,
@@ -41,11 +47,13 @@ describe.skipIf(!REDIS_URL)("admission check, against the real Redis client", ()
   const commandsSent = () => spies.reduce((total, spy) => total + spy.mock.calls.length, 0);
   const avail = async () => Number(await pool.next().get(reserveKeys(EVENT_ID)[0]));
 
-  const reserve = (body: unknown, token?: string) =>
+  /** As alice, logged in, unless `as` says otherwise (null sends no session). */
+  const reserve = async (body: unknown, token?: string, as: string | null = "alice") =>
     fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        ...(as === null ? {} : { authorization: await bearer(as) }),
         ...(token === undefined ? {} : { "x-admission-token": token }),
       },
       body: JSON.stringify(body),
@@ -60,6 +68,7 @@ describe.skipIf(!REDIS_URL)("admission check, against the real Redis client", ()
     const app = createApp(logger, undefined, {
       reserveScript,
       redisPool: pool,
+      authenticate: requireSession(TEST_SESSION_SECRET),
       requireAdmission: createRequireAdmission({ secret: TEST_ADMISSION_SECRET, logger }),
     });
     server = app.listen(0, "127.0.0.1");
@@ -87,10 +96,12 @@ describe.skipIf(!REDIS_URL)("admission check, against the real Redis client", ()
   });
 
   it("1. sends no Redis command for a request it refuses", async () => {
-    const body = { eventId: EVENT_ID, userId: "alice", qty: 1 };
+    const body = { eventId: EVENT_ID, qty: 1 };
     const forBob = await mintAdmissionToken({ userId: "bob", eventId: EVENT_ID });
+    const forAlice = await mintAdmissionToken({ userId: "alice", eventId: EVENT_ID });
 
     const refused = [
+      [await reserve(body, forAlice, null), 401, "UNAUTHENTICATED"],
       [await reserve(body), 401, "ADMISSION_REQUIRED"],
       [await reserve(body, "not-a-jwt"), 401, "TOKEN_INVALID"],
       [await reserve(body, forBob), 403, "TOKEN_MISMATCH"],
@@ -107,7 +118,7 @@ describe.skipIf(!REDIS_URL)("admission check, against the real Redis client", ()
 
   it("runs reserve.lua, once, for a caller with a valid token", async () => {
     const token = await mintAdmissionToken({ userId: "alice", eventId: EVENT_ID });
-    const res = await reserve({ eventId: EVENT_ID, userId: "alice", qty: 2 }, token);
+    const res = await reserve({ eventId: EVENT_ID, qty: 2 }, token);
     expect(res.status).toBe(201);
     expect(await res.json()).toEqual({ holdId: expect.stringContaining(`${EVENT_ID}:alice:`) });
 

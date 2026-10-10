@@ -1,6 +1,7 @@
 // order-api: POST /auth/dev-login, POST /orders/:id/pay, GET /orders/:id, the probes and /metrics. Takes
 // requests only; every background job lives in worker.ts, so the two scale and restart separately.
 
+import { requireSession } from "@flash/auth";
 import { createLogger } from "@flash/observability";
 import { Router } from "express";
 import { config } from "./config.js";
@@ -16,7 +17,7 @@ const logger = createLogger({ service: `${config.SERVICE_NAME}-api`, level: conf
 
 if (!config.SESSION_SECRET) {
   // Issuing and checking sessions is this process's job, so a missing secret is a boot failure.
-  throw new Error("SESSION_SECRET is required by the order API (it signs sessions)");
+  throw new Error("SESSION_SECRET is required by the order API (it signs and verifies sessions)");
 }
 const sessionSecret = config.SESSION_SECRET;
 
@@ -35,6 +36,8 @@ if (config.NODE_ENV === "production") {
   );
   routes.use(createAuthRouter({ secret: sessionSecret }));
 }
+// Everything about an order needs a caller. Whose order it is is not checked.
+routes.use("/orders", requireSession(sessionSecret));
 routes.use(createPayRouter({ publish: publishPaymentRequested, logger }));
 routes.use(createOrdersRouter());
 

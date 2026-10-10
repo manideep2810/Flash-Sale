@@ -1,4 +1,5 @@
 import cluster from "node:cluster";
+import { requireSession } from "@flash/auth";
 import { createLogger } from "@flash/observability";
 import { admissionNotRequired, createRequireAdmission } from "./admission.js";
 import { getPool } from "./baseline/db.js";
@@ -17,7 +18,8 @@ import { startServer } from "./server.js";
 // METRICS_PORT. Workers run the HTTP app; each opens its own Redis/Postgres pools.
 //
 // The config is parsed here, in the primary as well as in each worker, so a bad one (ADMISSION_SECRET
-// missing or short, REQUIRE_ADMISSION=false in production) stops the primary before it forks.
+// or SESSION_SECRET missing or short, REQUIRE_ADMISSION=false in production) stops the primary before
+// it forks.
 const config = parseConfig();
 const logger = createLogger({ service: config.SERVICE_NAME, level: config.LOG_LEVEL });
 
@@ -115,6 +117,7 @@ async function runWorker(): Promise<void> {
     baselinePool,
     reserveScript,
     redisPool,
+    authenticate: requireSession(config.SESSION_SECRET),
     requireAdmission,
     closeClients: async () => {
       await Promise.all([baselinePool?.end(), redisPool?.quit()]);

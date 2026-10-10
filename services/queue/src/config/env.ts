@@ -1,4 +1,4 @@
-import { baseEnvSchema, loadEnv } from "@flash/config";
+import { baseEnvSchema, hmacSecretSchema, loadEnv } from "@flash/config";
 import { z } from "zod";
 
 const MIN_SECRET_BYTES = 32;
@@ -10,6 +10,8 @@ const sharedSchema = baseEnvSchema.extend({
 });
 
 const serverSchema = sharedSchema.extend({
+  /** Verifies the caller's session (signed by order-api's login). The same value order-api has. */
+  SESSION_SECRET: hmacSecretSchema,
   /** Signs the admission JWT (HS256), so it needs at least as many bytes as the hash is wide. */
   ADMISSION_SECRET: z
     .string()
@@ -27,7 +29,7 @@ export type ServerEnv = z.infer<typeof serverSchema>;
 export type AdmitterEnv = z.infer<typeof admitterSchema>;
 
 // Two processes share this codebase and one .env. Each validates only what it uses, so the admitter
-// never needs the signing secret. Both throw at boot with the missing/invalid variables named.
+// never needs either secret. Both throw at boot with the missing/invalid variables named.
 
 export function loadServerEnv(env: NodeJS.ProcessEnv = process.env): ServerEnv {
   return loadEnv(serverSchema, env);

@@ -3,6 +3,7 @@
 // (src/admitter/main.ts), a separate process.
 
 import { setTimeout as sleep } from "node:timers/promises";
+import { requireSession } from "@flash/auth";
 import { createLogger } from "@flash/observability";
 import { loadServerEnv } from "../config/env.js";
 import { createEventConfigs } from "../config/events.js";
@@ -43,7 +44,7 @@ const state: AppState = { shuttingDown: false };
 const app = createApp({
   logger,
   state,
-  routes: createQueueRouter({ service, nodeEnv: env.NODE_ENV }),
+  routes: createQueueRouter({ service, authenticate: requireSession(env.SESSION_SECRET) }),
   redisReachable: () => redisReachable(redis),
 });
 

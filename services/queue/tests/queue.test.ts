@@ -94,7 +94,7 @@ describe.skipIf(!REDIS_URL)("queue-svc, against Redis", () => {
     expect(scoreOf(100)).toBeGreaterThanOrEqual(saleOpensAt);
   });
 
-  it("3. answers 409 before the lobby opens, 404 for an unknown event, 401 without a caller", async () => {
+  it("3. answers 409 before the lobby opens, 404 for an unknown event, 401 without a session", async () => {
     const { eventId, lobbyOpensAt } = await h.seedEvent({
       lobbyOpensInMs: 3_600_000,
       saleOpensInMs: 7_200_000,
@@ -119,11 +119,22 @@ describe.skipIf(!REDIS_URL)("queue-svc, against Redis", () => {
       expect(reply.body).toMatchObject({ code: "UNAUTHENTICATED" });
     }
 
-    // Outside development and test the header is not believed.
-    const production = await h.serve("production");
-    const refused = await request(production, "POST", `/queue/${open}/join`, "u1");
-    expect(refused.status).toBe(401);
+    // The old X-Dev-User header is not an identity any more, and neither is the gateway's x-user-id.
+    const headersOnly = await request(h.baseUrl, "POST", `/queue/${open}/join`, undefined, {
+      "x-dev-user": "u1",
+      "x-user-id": "u1",
+    });
+    expect(headersOnly.status).toBe(401);
+    expect(headersOnly.body).toMatchObject({ code: "UNAUTHENTICATED" });
     expect(await h.redis.zcard(queueKey(open))).toBe(0);
+
+    // With a session they are ignored: the caller is who the session says.
+    const asAlice = await request(h.baseUrl, "POST", `/queue/${open}/join`, "alice", {
+      "x-dev-user": "bob",
+      "x-user-id": "bob",
+    });
+    expect(asAlice.body).toMatchObject({ status: "QUEUED" });
+    expect(await h.redis.zrange(queueKey(open), "0", "-1")).toEqual(["alice"]);
   });
 
   it("4. reports every field for a queued user, and NOT_IN_QUEUE for one who never joined", async () => {

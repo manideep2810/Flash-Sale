@@ -1,13 +1,14 @@
+import { getCallerId } from "@flash/auth";
 import type { Logger } from "@flash/observability";
-import { type Request, type Response, Router } from "express";
+import { type Request, type RequestHandler, type Response, Router } from "express";
 import { z } from "zod";
 import { ADMISSION_HEADER, AdmissionError, type RequireAdmission } from "./admission.js";
 import { type RedisPool, type ReserveScript, resetEvent } from "./redis/index.js";
 
-// Same shape the Postgres variants accept, so one k6 script can point at either path.
+// No userId: who is reserving is the session's user, never a field the caller fills in. A userId
+// sent anyway (the Postgres variants still take one) is dropped unread.
 const reserveBody = z.object({
   eventId: z.string().min(1),
-  userId: z.string().min(1),
   qty: z.number().int().min(1),
 });
 
@@ -20,19 +21,10 @@ export interface RedisRouterOptions {
   script: ReserveScript;
   pool: RedisPool;
   logger: Logger;
-  /** The admission check /redis/reserve runs before anything else (src/admission.ts). */
+  /** requireSession() from @flash/auth: /redis/reserve needs a caller before it needs anything else. */
+  authenticate: RequestHandler;
+  /** The admission check, run for that caller before body validation and any Redis command. */
   requireAdmission: RequireAdmission;
-}
-
-/**
- * Who is calling: the one place a handler reads the caller's identity from. Today that is the
- * `userId` the request body claims, which nothing has verified; the admission token is what ties it
- * to a real admission. An absent or non-string userId is the empty string, which no token is for.
- */
-// TODO(item 4): return the verified session user
-export function getCallerId(req: Request): string {
-  const userId = (req.body as { userId?: unknown } | undefined)?.userId;
-  return typeof userId === "string" ? userId : "";
 }
 
 /** The event being reserved, as the body names it: the value reserve.lua is run for. */
@@ -45,15 +37,18 @@ export function createRedisRouter({
   script,
   pool,
   logger,
+  authenticate,
   requireAdmission,
 }: RedisRouterOptions): Router {
   const router = Router();
 
-  // POST /redis/reserve  {eventId, userId, qty} + X-Admission-Token
-  //   -> 201 {holdId} | 409 {error: "SOLD_OUT"} | 401, 403 {code, message} from the admission check
-  router.post("/redis/reserve", async (req: Request, res: Response) => {
-    // First, ahead of body validation and of every Redis command: a caller the waiting room has not
-    // admitted costs this service a signature check and nothing more.
+  // POST /redis/reserve  {eventId, qty} + Authorization: Bearer <session> + X-Admission-Token
+  //   -> 201 {holdId} | 409 {error: "SOLD_OUT"}
+  //    | 401 {code} from the session check | 401, 403 {code, message} from the admission check
+  router.post("/redis/reserve", authenticate, async (req: Request, res: Response) => {
+    // The caller is whoever the session says (getCallerId reads nothing the client can set). Then,
+    // ahead of body validation and of every Redis command, the admission check: a caller the waiting
+    // room has not admitted costs this service two signature checks and nothing more.
     const callerId = getCallerId(req);
     try {
       await requireAdmission(req.get(ADMISSION_HEADER), callerId, eventIdOf(req));

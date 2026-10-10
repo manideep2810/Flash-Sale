@@ -15,6 +15,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@flash/auth": "workspace:*",
     "@flash/config": "workspace:*",
     "@flash/observability": "workspace:*",
     "express": "catalog:",

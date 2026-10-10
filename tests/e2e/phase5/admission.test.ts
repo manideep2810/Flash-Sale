@@ -1,10 +1,12 @@
-// The waiting room end to end: join -> admitted by the admitter -> status hands out the token ->
-// that token opens POST /redis/reserve on the ticket service.
+// The waiting room end to end, service to service: join -> admitted by the admitter -> status hands
+// out the token -> that token opens POST /redis/reserve on the ticket service. Each call carries the
+// user's session. (gateway.test.ts covers the same path through Envoy.)
 //
 //   pnpm -C tests/e2e run test:phase5
 //
 // Starts the ticket service, queue-svc and queue-admitter as child processes on their usual ports
-// (stop `make dev` first), all given one ADMISSION_SECRET. Needs only Redis from the local stack.
+// (stop `make dev` first), all given one SESSION_SECRET and one ADMISSION_SECRET. Needs only Redis
+// from the local stack.
 
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -13,7 +15,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { Redis } from "ioredis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { TEST_ADMISSION_SECRET } from "../../../tools/admission-token.js";
+import { bearer, TEST_ADMISSION_SECRET, TEST_SESSION_SECRET } from "../../../tools/tokens.js";
 
 const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6380";
@@ -121,7 +123,11 @@ async function call(
 }
 
 describe("admission token, from the waiting room to /redis/reserve", () => {
-  const shared = { REDIS_URL, ADMISSION_SECRET: TEST_ADMISSION_SECRET };
+  const shared = {
+    REDIS_URL,
+    SESSION_SECRET: TEST_SESSION_SECRET,
+    ADMISSION_SECRET: TEST_ADMISSION_SECRET,
+  };
   const procs = [
     new Proc("ticket", "ticket", "src/index.ts", `${TICKET}/healthz/ready`, {
       ...shared,
@@ -147,27 +153,30 @@ describe("admission token, from the waiting room to /redis/reserve", () => {
 
   /** Joins, then polls status the way a client would until the admitter has let the user in. */
   async function admit(userId: string): Promise<string> {
-    const joined = await call("POST", `${QUEUE}/queue/${eventId}/join`, { "x-dev-user": userId });
+    const session = { authorization: await bearer(userId) };
+    const joined = await call("POST", `${QUEUE}/queue/${eventId}/join`, session);
     expect(joined.status).toBe(200);
     expect(["QUEUED", "ADMITTED"]).toContain(joined.body.status);
 
     let token: string | undefined;
     await waitFor(`${userId} to be admitted`, 15_000, async () => {
-      const { body } = await call("GET", `${QUEUE}/queue/${eventId}/status`, {
-        "x-dev-user": userId,
-      });
+      const { body } = await call("GET", `${QUEUE}/queue/${eventId}/status`, session);
       token = body.token;
       return body.status === "ADMITTED";
     });
     return String(token);
   }
 
-  const reserve = (userId: string, token?: string) =>
+  /** As `userId`, logged in, unless `userId` is null. The body does not say who is reserving. */
+  const reserve = async (userId: string | null, token?: string) =>
     call(
       "POST",
       `${TICKET}/redis/reserve`,
-      token === undefined ? {} : { "x-admission-token": token },
-      { eventId, userId, qty: 1 },
+      {
+        ...(userId === null ? {} : { authorization: await bearer(userId) }),
+        ...(token === undefined ? {} : { "x-admission-token": token }),
+      },
+      { eventId, qty: 1 },
     );
 
   beforeAll(async () => {
@@ -226,6 +235,11 @@ describe("admission token, from the waiting room to /redis/reserve", () => {
 
   it("refuses the same reserve without the token, or with someone else's", async () => {
     const alices = await admit("alice");
+
+    // No session: alice's admission token alone is not enough.
+    const anonymous = await reserve(null, alices);
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.body.code).toBe("UNAUTHENTICATED");
 
     const none = await reserve("bob");
     expect(none.status).toBe(401);

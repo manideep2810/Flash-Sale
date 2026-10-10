@@ -7,11 +7,7 @@ import { promisify } from "node:util";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { Redis } from "ioredis";
 import pg from "pg";
-import {
-  ADMISSION_HEADER,
-  mintAdmissionToken,
-  TEST_ADMISSION_SECRET,
-} from "../../tools/admission-token.js";
+import { reserveHeaders, TEST_ADMISSION_SECRET, TEST_SESSION_SECRET } from "../../tools/tokens.js";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -198,11 +194,12 @@ export async function startFixture(): Promise<Fixture> {
     );
   }
 
-  // The ticket service is given the secret this harness mints admission tokens with (see reserve()).
+  // The ticket service is given the secrets this harness mints its tokens with (see reserve()).
   const ticket = new Service("ticket", 3001, {
     REDIS_URL,
     WORKERS: "2",
     METRICS_PORT: "9464",
+    SESSION_SECRET: TEST_SESSION_SECRET,
     ADMISSION_SECRET: TEST_ADMISSION_SECRET,
   });
   const relay = new Service("relay", 3002, { REDIS_URL, KAFKA_BROKERS });
@@ -251,12 +248,12 @@ export async function startFixture(): Promise<Fixture> {
         Array.from({ length: Math.min(50, count) }, async () => {
           while (next < count) {
             const userId = `${userPrefix}-${next++}`;
-            // These scenarios start after the waiting room, so the harness admits each user itself.
-            const token = await mintAdmissionToken({ userId, eventId });
+            // These scenarios start after the login and the waiting room, so the harness signs each
+            // user in and admits them itself.
             const res = await postJson(
               "/redis/reserve",
-              { eventId, userId, qty: 1 },
-              { [ADMISSION_HEADER]: token },
+              { eventId, qty: 1 },
+              await reserveHeaders(userId, eventId),
             );
             const body = await res.text();
             if (res.status === 201) {
