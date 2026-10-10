@@ -20,9 +20,20 @@ const envSchema = baseEnvSchema.extend({
     .refine((secret) => Buffer.byteLength(secret, "utf8") >= MIN_SECRET_BYTES, {
       error: `must be at least ${MIN_SECRET_BYTES} bytes`,
     }),
+  // false skips the admission check, for raw-capacity benchmarks only. Never in production.
+  REQUIRE_ADMISSION: z.stringbool().default(true),
 });
 
 export type Config = z.infer<typeof envSchema>;
 
-/** Parsed once at startup; throws with the missing/invalid variables named. */
-export const config: Config = loadEnv(envSchema);
+/** Called once at startup (src/index.ts); throws with the missing/invalid variables named. */
+export function parseConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const config = loadEnv(envSchema, env);
+  if (!config.REQUIRE_ADMISSION && config.NODE_ENV === "production") {
+    throw new Error(
+      "REQUIRE_ADMISSION=false is not allowed with NODE_ENV=production: " +
+        "/redis/reserve would accept callers the waiting room never admitted",
+    );
+  }
+  return config;
+}

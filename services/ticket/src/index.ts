@@ -1,8 +1,8 @@
 import cluster from "node:cluster";
 import { createLogger } from "@flash/observability";
-import { createRequireAdmission } from "./admission.js";
+import { admissionNotRequired, createRequireAdmission } from "./admission.js";
 import { getPool } from "./baseline/db.js";
-import { config } from "./config.js";
+import { parseConfig } from "./config.js";
 import { collectWorkerMetrics, startMetricsServer } from "./metrics.js";
 import {
   createReserveScript,
@@ -15,6 +15,10 @@ import { startServer } from "./server.js";
 // Process model: the primary forks WORKERS node:cluster workers that all accept on PORT (one Node
 // thread cannot drive a flash-sale burst alone), and serves /metrics for the whole set on
 // METRICS_PORT. Workers run the HTTP app; each opens its own Redis/Postgres pools.
+//
+// The config is parsed here, in the primary as well as in each worker, so a bad one (ADMISSION_SECRET
+// missing or short, REQUIRE_ADMISSION=false in production) stops the primary before it forks.
+const config = parseConfig();
 const logger = createLogger({ service: config.SERVICE_NAME, level: config.LOG_LEVEL });
 
 if (cluster.isPrimary) {
@@ -56,6 +60,12 @@ function runPrimary(): void {
     fork();
   }
   log.info("primary started", { workers: config.WORKERS, metricsPort: config.METRICS_PORT });
+  if (!config.REQUIRE_ADMISSION) {
+    // Once, from the primary, not once per worker.
+    log.warn(
+      "REQUIRE_ADMISSION=false: /redis/reserve is not checking admission tokens. Benchmarks only.",
+    );
+  }
 
   const metricsServer = startMetricsServer({ port: config.METRICS_PORT, logger: log });
 
@@ -95,10 +105,9 @@ async function runWorker(): Promise<void> {
   }
 
   // The secret is read and encoded once, here, at startup.
-  const requireAdmission = createRequireAdmission({
-    secret: config.ADMISSION_SECRET,
-    logger: log,
-  });
+  const requireAdmission = config.REQUIRE_ADMISSION
+    ? createRequireAdmission({ secret: config.ADMISSION_SECRET, logger: log })
+    : admissionNotRequired;
 
   startServer({
     port: config.PORT,
