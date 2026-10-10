@@ -12,6 +12,7 @@ set -eu
 
 TEMPLATE=/etc/envoy/gateway/envoy.yaml
 RENDERED=/tmp/envoy.yaml
+CR=$(printf '\r')
 
 # A JWK carries a symmetric key as unpadded base64url.
 b64url() {
@@ -25,10 +26,12 @@ ADMISSION_JWK_K=$(b64url "$ADMISSION_SECRET")
 export SESSION_JWK_K ADMISSION_JWK_K
 
 cp "$TEMPLATE" "$RENDERED"
-# Every ${NAME} the template uses must be set. The values are base64url text, numbers and durations,
-# none of which can contain the '|' that delimits the sed expression.
-for name in $(grep -o '\${[A-Z0-9_]*}' "$TEMPLATE" | tr -d '${}' | sort -u); do
+# Every ${NAME} the template uses (outside its comments) must be set. The values are base64url text,
+# numbers and durations, none of which can contain the '|' that delimits the sed expression. A
+# carriage return is dropped, in case an env file was saved with Windows line endings.
+for name in $(grep -v '^[[:space:]]*#' "$TEMPLATE" | grep -o '\${[A-Z0-9_]*}' | tr -d '${}' | sort -u); do
   eval "value=\${$name:-}"
+  value=$(printf '%s' "$value" | tr -d "$CR")
   if [ -z "$value" ]; then
     echo "entrypoint: $name is used by envoy.yaml but is not set" >&2
     exit 1
@@ -36,4 +39,5 @@ for name in $(grep -o '\${[A-Z0-9_]*}' "$TEMPLATE" | tr -d '${}' | sort -u); do
   sed -i "s|\${$name}|$value|g" "$RENDERED"
 done
 
-exec /docker-entrypoint.sh envoy -c "$RENDERED" "$@"
+# Access-log lines reach stdout within a second instead of Envoy's default ten.
+exec /docker-entrypoint.sh envoy -c "$RENDERED" --file-flush-interval-msec 1000 "$@"

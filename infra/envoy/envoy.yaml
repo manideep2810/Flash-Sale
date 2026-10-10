@@ -1,11 +1,20 @@
 # The API gateway: the only port clients use (8080). Mounted into the envoy container by
 # infra/docker/docker-compose.yml.
 #
+# THIS FILE IS A TEMPLATE. entrypoint.sh fills in each dollar-brace placeholder from the
+# container's environment at start and runs Envoy on the result, so no secret is committed here:
+#   ${SESSION_JWK_K}, ${ADMISSION_JWK_K}   the two HS256 keys, from SESSION_SECRET and ADMISSION_SECRET
+#
 # The services run on the host (`make dev`), not in compose, so the clusters at the bottom point at
 # host.docker.internal. Each service keeps its own paths; the routes rewrite /api/... onto them.
 #
 # What a request passes through, in order:
-#   1. router
+#   1. jwt_authn          the session on every /api route but the login, plus the admission token on
+#                         reserve. A request that fails here never reaches a service.
+#   2. router
+#
+# The services check the session and the admission token again themselves. This is the first
+# check, not the only one.
 
 admin:
   # Stats (/stats/prometheus), clusters and the config dump. The config dump includes the JWT keys,
@@ -30,6 +39,14 @@ static_resources:
                 xff_num_trusted_hops: 0
                 # Every request gets an x-request-id here; it is passed upstream and the services log it.
                 generate_request_id: true
+                # x-user-id is the gateway's own header: whatever a client sent under that name is dropped
+                # before anything looks at the request, and jwt_authn then sets it from the verified session.
+                early_header_mutation_extensions:
+                  - name: envoy.http.early_header_mutation.header_mutation
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.http.early_header_mutation.header_mutation.v3.HeaderMutation
+                      mutations:
+                        - remove: x-user-id
                 access_log:
                   - name: envoy.access_loggers.stdout
                     typed_config:
@@ -42,16 +59,64 @@ static_resources:
                           path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
                           route: "%ROUTE_NAME%"
                           status: "%RESPONSE_CODE%"
-                          # flags says that Envoy answered and broadly why (RL = rate limited, UAEX = refused by a
-                          # filter); details says which filter: local_rate_limited is the local bucket,
-                          # request_rate_limited the global service, jwt_authn_access_denied{...} the token check.
+                          # flags is set when Envoy answered itself (NR = no route, RL = rate limited); details
+                          # says exactly why: jwt_authn_access_denied{...} is the token check, local_rate_limited
+                          # the local bucket, request_rate_limited the global service, via_upstream a service.
                           flags: "%RESPONSE_FLAGS%"
                           details: "%RESPONSE_CODE_DETAILS%"
                           user: "%REQ(X-USER-ID)%"
                           client: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
                           upstream: "%UPSTREAM_CLUSTER%"
                           duration_ms: "%DURATION%"
+                # What Envoy answers when it refuses a request itself: JSON {code, message}, like the services.
+                local_reply_config:
+                  mappers:
+                    - filter:
+                        status_code_filter:
+                          comparison: { op: EQ, value: { default_value: 401, runtime_key: gateway.local_reply.unauthenticated } }
+                      body_format_override:
+                        json_format: { code: UNAUTHENTICATED, message: "%LOCAL_REPLY_BODY%" }
                 http_filters:
+                  # JWT check. Two providers, both HS256 with a key from the environment (entrypoint.sh): a JWK that
+                  # names its algorithm only verifies tokens signed with that algorithm, so `none` and HS512 fail.
+                  - name: envoy.filters.http.jwt_authn
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+                      providers:
+                        # Who the caller is: issued by order-api's login, sent as "Authorization: Bearer <token>".
+                        session:
+                          issuer: order-api
+                          audiences: [session]
+                          from_headers:
+                            - { name: Authorization, value_prefix: "Bearer " }
+                          forward: true
+                          clock_skew_seconds: 2
+                          local_jwks:
+                            inline_string: '{"keys":[{"kty":"oct","alg":"HS256","k":"${SESSION_JWK_K}"}]}'
+                          # For the rate limiter only. The services never read it: they verify the token themselves.
+                          claim_to_headers:
+                            - { header_name: x-user-id, claim_name: sub }
+                        # That the waiting room admitted them: issued by queue-svc, sent as "X-Admission-Token".
+                        admission:
+                          issuer: queue-svc
+                          audiences: [reserve]
+                          from_headers:
+                            - { name: x-admission-token }
+                          forward: true
+                          clock_skew_seconds: 2
+                          local_jwks:
+                            inline_string: '{"keys":[{"kty":"oct","alg":"HS256","k":"${ADMISSION_JWK_K}"}]}'
+                      rules:
+                        # The first rule that matches decides.
+                        - match: { path: /api/auth/dev-login }
+                        - match: { path: /api/reserve }
+                          requires:
+                            requires_all:
+                              requirements:
+                                - provider_name: session
+                                - provider_name: admission
+                        - match: { prefix: /api/ }
+                          requires: { provider_name: session }
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
