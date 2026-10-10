@@ -7,6 +7,7 @@
     "check-outbox": "tsx check-outbox.ts",
     "check-invariants": "tsx check-invariants.ts",
     "smoke-phase4": "tsx smoke-phase4.ts",
+    "seed-queue-event": "tsx seed-queue-event.ts",
     "lint": "biome check --config-path=../.biomerc.json .",
     "typecheck": "tsc --noEmit"
   },
