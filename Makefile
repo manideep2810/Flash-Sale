@@ -50,7 +50,7 @@ TARGET_RPS        ?=
 LOG_LEVEL         ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline test-order-db test-payment-db test-queue smoke-phase4 check-invariants loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean
+.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline test-order-db test-payment-db test-queue test-phase5 smoke-phase4 check-invariants loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean
 
 help: ## List available targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -116,6 +116,9 @@ test-payment-db: ## Run the payment-mock request-handling tests against a throwa
 
 test-queue: ## Run the waiting-room tests (queue-svc and the admitter) against the local redis
 	REDIS_URL="$(REDIS_URL)" $(PNPM) -C services/queue run test
+
+test-phase5: ## Waiting room and gateway end to end, through Envoy on :8080 with the test limits (needs `make up`; stop `make dev` first)
+	$(PNPM) -C tests/e2e run test:phase5
 
 smoke-phase4: ## reserve -> pay -> wait for the payment -> check invariants (needs `make dev` and the stack up)
 	$(PNPM) -C tools run smoke-phase4
