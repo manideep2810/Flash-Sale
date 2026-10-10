@@ -186,6 +186,8 @@ export interface HarnessOptions {
 function procs(extra: HarnessOptions = {}) {
   const timers = Object.fromEntries(Object.entries(TIMERS).map(([k, v]) => [k, String(v)]));
   const orderEnv = {
+    // order-api signs sessions and will not start without a secret.
+    SESSION_SECRET: process.env.SESSION_SECRET ?? "local-dev-only-session-secret-0123456789abcdef0",
     DATABASE_URL: ORDER_DB,
     KAFKA_BROKERS,
     REDIS_URL,

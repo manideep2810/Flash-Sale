@@ -1,4 +1,4 @@
-import { baseEnvSchema, loadEnv } from "@flash/config";
+import { baseEnvSchema, hmacSecretSchema, loadEnv } from "@flash/config";
 import { z } from "zod";
 
 const envSchema = baseEnvSchema.extend({
@@ -21,6 +21,12 @@ const envSchema = baseEnvSchema.extend({
   RESULT_CONSUMER_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(1),
   /** Redis holding the holds and inventory; required by the worker, which settles holds. */
   REDIS_URL: z.url().optional(),
+  /**
+   * Signs sessions at the dev login and verifies them on /orders. Required by the API, which checks
+   * for it at boot; the worker takes no requests and never needs it. The same value every service
+   * that verifies a session is given.
+   */
+  SESSION_SECRET: hmacSecretSchema.optional(),
 });
 
 export type Config = z.infer<typeof envSchema>;

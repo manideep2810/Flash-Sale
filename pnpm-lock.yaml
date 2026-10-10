@@ -233,6 +233,28 @@ importers:
         specifier: 'catalog:'
         version: 2.5.14
 
+  packages/auth:
+    dependencies:
+      jose:
+        specifier: 'catalog:'
+        version: 6.2.12
+    devDependencies:
+      '@types/express':
+        specifier: 'catalog:'
+        version: 5.0.6
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.13.6
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vite:
+        specifier: 'catalog:'
+        version: 8.3.1(@types/node@24.13.6)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15)
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.2(@opentelemetry/api@1.9.1)(@types/node@24.13.6)(vite@8.3.1(@types/node@24.13.6)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
+
   packages/config:
     dependencies:
       zod:
@@ -314,6 +336,9 @@ importers:
       '@confluentinc/kafka-javascript':
         specifier: 'catalog:'
         version: 1.10.1
+      '@flash/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@flash/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -348,6 +373,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.6
+      jose:
+        specifier: 'catalog:'
+        version: 6.2.12
       prisma:
         specifier: 'catalog:'
         version: 7.10.0(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@7.0.2)
