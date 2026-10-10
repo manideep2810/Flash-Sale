@@ -52,6 +52,19 @@ scrape_configs:
       # 3008-3010 are extra payment processes, started by the load run (tests/e2e/phase4/run-load.ts).
       - targets: ["host.docker.internal:3004", "host.docker.internal:3008", "host.docker.internal:3009", "host.docker.internal:3010"]
 
+  # Phase 5 waiting room. Two processes of one codebase (services/queue/.env.example): queue-svc on
+  # PORT serves joins and status, and the single admitter serves only /healthz and /metrics on
+  # ADMITTER_PORT.
+  - job_name: queue
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:4100"]
+
+  - job_name: queue-admitter
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:3011"]
+
   # Stream length and the relay group's unread and pending counts, read straight from Redis by
   # redis_exporter. Unlike the relay's own gauges these keep reporting while the relay is down. It is
   # a container on the same compose network, so it is reached by service name.
