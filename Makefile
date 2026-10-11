@@ -40,6 +40,14 @@ TOPICS_SH        := COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT_NAME) COMPOSE_FILE=$(
 
 PNPM ?= pnpm
 
+# ---- The gateway's profiles ---------------------------------------------------
+# The load profile is docker-compose.load.yml layered on the normal file: higher local buckets and
+# no per-address limit, because a load run plays a whole crowd from one address.
+LOAD_OVERRIDE    := infra/docker/docker-compose.load.yml
+GATEWAY_SERVICES := envoy ratelimit
+# Empties the rate limiter's counters, so windows counted under one profile do not carry into the other.
+FLUSH_LIMITS     := $(DOCKER_COMPOSE) exec -T redis-ratelimit redis-cli flushall
+
 # ---- Load testing (k6 -> Prometheus remote write -> Grafana) -----------------
 K6                ?= k6
 PROMETHEUS_RW_URL ?= http://localhost:9090/api/v1/write
@@ -50,7 +58,7 @@ TARGET_RPS        ?=
 LOG_LEVEL         ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline test-order-db test-payment-db test-queue test-phase5 smoke-phase4 check-invariants loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean
+.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline test-order-db test-payment-db test-queue test-phase5 smoke-phase4 check-invariants loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean load-profile normal-profile
 
 help: ## List available targets
 	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -125,6 +133,16 @@ smoke-phase4: ## reserve -> pay -> wait for the payment -> check invariants (nee
 
 check-invariants: ## Check the saga invariants (I1-I4) against the running stack: make check-invariants [EVENT=evt-001]
 	$(PNPM) -C tools run check-invariants $(EVENT)
+
+load-profile: $(COMPOSE_ENV) ## Gateway on the LOAD limits: no per-address limit, higher local buckets (recreates envoy and ratelimit if they differ)
+	$(DOCKER_COMPOSE) -f $(LOAD_OVERRIDE) up -d --wait --wait-timeout $(WAIT_TIMEOUT) $(GATEWAY_SERVICES)
+	@$(FLUSH_LIMITS) > /dev/null
+	@echo "✓ gateway on the LOAD profile (go back with: make normal-profile)"
+
+normal-profile: $(COMPOSE_ENV) ## Gateway back on the normal limits (recreates envoy and ratelimit if they differ)
+	$(DOCKER_COMPOSE) up -d --wait --wait-timeout $(WAIT_TIMEOUT) $(GATEWAY_SERVICES)
+	@$(FLUSH_LIMITS) > /dev/null
+	@echo "✓ gateway on the NORMAL profile"
 
 loadtest-baseline: ## k6 baseline run streamed to Prometheus/Grafana: VARIANT=redis TARGET_RPS=500 (service via `make dev-loadtest`)
 	@[ -n "$(VARIANT)" ] && [ -n "$(TARGET_RPS)" ] \
