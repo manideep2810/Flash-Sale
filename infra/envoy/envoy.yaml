@@ -419,6 +419,10 @@ static_resources:
                                   header: { key: retry-after, value: "1" }
                         # POST /api/reserve -> ticket service /redis/reserve
                         - name: reserve
+                          # Counters and a latency histogram of its own for this route
+                          # (vhost.api.route.reserve.*): how long the ticket service takes to answer a
+                          # reserve, measured here. The per-cluster numbers would mix in the catalogue.
+                          stat_prefix: reserve
                           match:
                             path: /api/reserve
                             headers: [{ name: ":method", string_match: { exact: POST } }]
