@@ -1,4 +1,6 @@
-// Seeds one waiting-room event for a fresh run.
+// Seeds one waiting-room event for a fresh run, straight into Redis. The event gets NO entry in the
+// catalogue, so it is not on the web app's front page: for events to look at, use seed-events.ts
+// (`make seed`). This one is for load runs and for poking at the waiting room by hand.
 //
 //   pnpm -C tools run seed-queue-event
 //   EVENT_ID=evt-001 SALE_OPENS_IN_SEC=10 ADMIT_RATE=50 pnpm -C tools run seed-queue-event
@@ -30,8 +32,8 @@ const LOBBY_OPENS_IN_SEC = numberFromEnv("LOBBY_OPENS_IN_SEC", 0, 0);
 const SALE_OPENS_IN_SEC = numberFromEnv("SALE_OPENS_IN_SEC", 60, 0);
 const ADMIT_RATE = numberFromEnv("ADMIT_RATE", 500, 1);
 const ADMIT_TTL_SEC = numberFromEnv("ADMIT_TTL_SEC", 120, 1);
-// What the event page shows. The price is in the smallest currency unit and is display only: every
-// order is charged the order service's PAY_AMOUNT.
+// The price is per ticket, in the smallest currency unit: what the order service charges, times the
+// quantity, when an order of this event is paid for.
 const EVENT_NAME = process.env.EVENT_NAME || "Demo event";
 const EVENT_PRICE = numberFromEnv("EVENT_PRICE", 4999, 0);
 

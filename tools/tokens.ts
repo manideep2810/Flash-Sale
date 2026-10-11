@@ -1,9 +1,10 @@
 // Mints the two tokens a caller needs, for tests and tools that talk to the services directly
 // instead of logging in and waiting in the queue:
 //
-//   mintSessionToken(userId)             who the caller is. What order-api's dev login issues
+//   mintSessionToken(userId, role?)      who the caller is. What order-api's logins issue
 //                                        (signSession in packages/auth): HS256, sub = userId,
 //                                        aud = "session", iss = "order-api", exp = now + 12h.
+//                                        With role "admin" it is what the admin login issues.
 //   mintAdmissionToken({userId, eventId}) that the waiting room let them in. What queue-svc issues
 //                                        (services/queue/src/queue/token.ts): HS256, sub = userId,
 //                                        eid = eventId, aud = "reserve", iss = "queue-svc".
@@ -28,9 +29,9 @@ const key = (secret: string) => new TextEncoder().encode(secret);
 const sessionKey = key(TEST_SESSION_SECRET);
 const admissionKey = key(TEST_ADMISSION_SECRET);
 
-export async function mintSessionToken(userId: string): Promise<string> {
+export async function mintSessionToken(userId: string, role?: string): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({})
+  return new SignJWT(role ? { role } : {})
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(userId)
     .setAudience("session")
@@ -40,9 +41,9 @@ export async function mintSessionToken(userId: string): Promise<string> {
     .sign(sessionKey);
 }
 
-/** `Authorization` header value for `userId`'s session. */
-export async function bearer(userId: string): Promise<string> {
-  return `Bearer ${await mintSessionToken(userId)}`;
+/** `Authorization` header value for `userId`'s session; `role` "admin" makes it an admin's. */
+export async function bearer(userId: string, role?: string): Promise<string> {
+  return `Bearer ${await mintSessionToken(userId, role)}`;
 }
 
 export async function mintAdmissionToken({

@@ -99,8 +99,8 @@ baseline-db: ## Apply infra/sql/baseline.sql (baseline schema: inventory + holds
 	$(DOCKER_COMPOSE) exec -T -e PGPASSWORD=$(POSTGRES_PASSWORD) postgres \
 		psql -v ON_ERROR_STOP=1 -U $(POSTGRES_USER) -d $(POSTGRES_DB) < infra/sql/baseline.sql
 
-seed: ## Load seed data (placeholder - nothing to seed yet)
-	@echo "seed: no seed data defined yet"
+seed: ## Put a handful of demo events in the catalogue (needs `make dev` and `make migrate`); safe to re-run
+	$(PNPM) -C tools run seed-events
 
 test: ## Run unit tests in every workspace
 	$(PNPM) -r run test
