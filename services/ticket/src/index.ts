@@ -1,8 +1,11 @@
 import cluster from "node:cluster";
-import { requireSession } from "@flash/auth";
+import { requireAdmin, requireSession } from "@flash/auth";
 import { createLogger } from "@flash/observability";
 import { admissionNotRequired, createRequireAdmission } from "./admission.js";
 import { getPool } from "./baseline/db.js";
+import { createEventLive } from "./catalogue/live.js";
+import { createEventStore, type EventStore } from "./catalogue/store.js";
+import { createUploadSigner } from "./catalogue/uploads.js";
 import { parseConfig } from "./config.js";
 import { collectWorkerMetrics, startMetricsServer } from "./metrics.js";
 import {
@@ -111,6 +114,23 @@ async function runWorker(): Promise<void> {
     ? createRequireAdmission({ secret: config.ADMISSION_SECRET, logger: log })
     : admissionNotRequired;
 
+  // The catalogue keeps its rows in Postgres and its live half in Redis, so it needs both.
+  let eventStore: EventStore | undefined;
+  if (config.DATABASE_URL && redisPool) {
+    eventStore = createEventStore(config.DATABASE_URL);
+  } else {
+    log.warn("the catalogue is off: it needs both DATABASE_URL and REDIS_URL");
+  }
+  const uploads =
+    config.CLOUDINARY_CLOUD_NAME && config.CLOUDINARY_API_KEY && config.CLOUDINARY_API_SECRET
+      ? createUploadSigner({
+          cloudName: config.CLOUDINARY_CLOUD_NAME,
+          apiKey: config.CLOUDINARY_API_KEY,
+          apiSecret: config.CLOUDINARY_API_SECRET,
+          folder: config.CLOUDINARY_FOLDER,
+        })
+      : undefined;
+
   startServer({
     port: config.PORT,
     logger: log,
@@ -119,8 +139,17 @@ async function runWorker(): Promise<void> {
     redisPool,
     authenticate: requireSession(config.SESSION_SECRET),
     requireAdmission,
+    catalogue:
+      eventStore && redisPool
+        ? {
+            store: eventStore,
+            live: createEventLive(redisPool),
+            requireAdmin: requireAdmin(config.SESSION_SECRET),
+            uploads,
+          }
+        : undefined,
     closeClients: async () => {
-      await Promise.all([baselinePool?.end(), redisPool?.quit()]);
+      await Promise.all([baselinePool?.end(), redisPool?.quit(), eventStore?.close()]);
     },
   });
 }

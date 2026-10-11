@@ -24,13 +24,37 @@ const envSchema = baseEnvSchema.extend({
     }),
   // false skips the admission check, for raw-capacity benchmarks only. Never in production.
   REQUIRE_ADMISSION: z.stringbool().default(true),
+  // Cover-image uploads from the admin page (src/catalogue/uploads.ts). All three or none: without
+  // them the catalogue works and the admin pastes an image URL instead. The secret signs uploads
+  // and never leaves this service.
+  CLOUDINARY_CLOUD_NAME: z.string().min(1).optional(),
+  CLOUDINARY_API_KEY: z.string().min(1).optional(),
+  CLOUDINARY_API_SECRET: z.string().min(1).optional(),
+  // Where in the Cloudinary account the covers go.
+  CLOUDINARY_FOLDER: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/)
+    .default("flash-sale/events"),
 });
 
 export type Config = z.infer<typeof envSchema>;
 
+const CLOUDINARY = [
+  "CLOUDINARY_CLOUD_NAME",
+  "CLOUDINARY_API_KEY",
+  "CLOUDINARY_API_SECRET",
+] as const;
+
 /** Called once at startup (src/index.ts); throws with the missing/invalid variables named. */
 export function parseConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const config = loadEnv(envSchema, env);
+  const missing = CLOUDINARY.filter((name) => !config[name]);
+  if (missing.length > 0 && missing.length < CLOUDINARY.length) {
+    throw new Error(
+      `Cloudinary is half configured: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} ` +
+        "not set. Set all three, or none to leave image uploads off.",
+    );
+  }
   if (!config.REQUIRE_ADMISSION && config.NODE_ENV === "production") {
     throw new Error(
       "REQUIRE_ADMISSION=false is not allowed with NODE_ENV=production: " +

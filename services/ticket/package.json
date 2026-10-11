@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:baseline": "vitest run tests/baseline.concurrency.test.ts",
+    "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy"
   },
@@ -18,6 +19,7 @@
     "@flash/auth": "workspace:*",
     "@flash/config": "workspace:*",
     "@flash/observability": "workspace:*",
+    "@prisma/adapter-pg": "catalog:",
     "@prisma/client": "catalog:",
     "express": "catalog:",
     "ioredis": "catalog:",

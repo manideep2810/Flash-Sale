@@ -562,6 +562,9 @@ importers:
       '@flash/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@prisma/adapter-pg':
+        specifier: 'catalog:'
+        version: 7.10.0
       '@prisma/client':
         specifier: 'catalog:'
         version: 7.10.0(prisma@7.10.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@7.0.2))(typescript@7.0.2)

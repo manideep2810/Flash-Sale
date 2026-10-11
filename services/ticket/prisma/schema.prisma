@@ -8,3 +8,23 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+// The catalogue: one row per event on sale. This table is the source of truth for what an event is;
+// the stock counters and the waiting room's config live in Redis and are written from here
+// (src/catalogue/live.ts). Nothing on the reserve path reads this table.
+model Event {
+  id              String   @id // A slug. It is in the event's URL, its Redis keys (ev:<id>:*) and every hold id, so it never changes
+  name            String
+  description     String   @default("")
+  price           Int // Per ticket, in the smallest currency unit
+  totalStock      Int // Tickets put on sale. Set once, when the event is created
+  imageUrl        String? // The cover the listing shows; an https URL (Cloudinary when uploaded from the admin page)
+  lobbyOpensAt    DateTime // From here on, people can join the waiting room
+  saleOpensAt     DateTime // From here on, the waiting room admits people to buy
+  admitRatePerSec Int      @default(50) // How many people a second the waiting room lets in
+  admitTtlSec     Int      @default(120) // How long an admitted person has to reserve
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([saleOpensAt]) // The listing is in order of sale time
+}

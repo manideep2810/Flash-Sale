@@ -5,6 +5,7 @@ import express, { type Express, type RequestHandler } from "express";
 import type { Pool } from "pg";
 import type { RequireAdmission } from "./admission.js";
 import { createBaselineRouter } from "./baseline/routes.js";
+import { type CatalogueRouterOptions, createCatalogueRouter } from "./catalogue/routes.js";
 import type { RedisPool, ReserveScript } from "./redis/index.js";
 import { createRedisRouter } from "./routes.js";
 
@@ -22,12 +23,21 @@ export interface AppOptions {
   /** Required whenever the two above are given: /redis/reserve is never mounted without its checks. */
   authenticate?: RequestHandler;
   requireAdmission?: RequireAdmission;
+  /** When set, mounts the catalogue: GET /events for everyone and /admin/* for the admin. */
+  catalogue?: Omit<CatalogueRouterOptions, "logger">;
 }
 
 export function createApp(
   logger: Logger,
   state: AppState = { shuttingDown: false },
-  { baselinePool, reserveScript, redisPool, authenticate, requireAdmission }: AppOptions = {},
+  {
+    baselinePool,
+    reserveScript,
+    redisPool,
+    authenticate,
+    requireAdmission,
+    catalogue,
+  }: AppOptions = {},
 ): Express {
   const app = express();
   app.disable("x-powered-by");
@@ -77,6 +87,10 @@ export function createApp(
     );
   }
 
+  if (catalogue) {
+    app.use(createCatalogueRouter({ ...catalogue, logger }));
+  }
+
   return app;
 }
 
@@ -108,6 +122,7 @@ export function startServer({
   redisPool,
   authenticate,
   requireAdmission,
+  catalogue,
   backlog = 4096,
 }: StartOptions): Server {
   const state: AppState = { shuttingDown: false };
@@ -118,6 +133,7 @@ export function startServer({
     redisPool,
     authenticate,
     requireAdmission,
+    catalogue,
   }).listen(port, "0.0.0.0", backlog, (error) => {
     if (error) {
       logger.error("server failed to start", error);
