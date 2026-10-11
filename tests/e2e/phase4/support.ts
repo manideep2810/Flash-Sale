@@ -28,6 +28,10 @@ const BASE_URL = "postgresql://app:app@localhost:5434/flashsale";
 /** Dedicated schemas: the scenarios truncate them, and `order` / `payment-mock` stay untouched. */
 export const ORDER_DB = `${BASE_URL}?schema=order_e2e`;
 export const PAYMENT_DB = `${BASE_URL}?schema=payment_e2e`;
+/** The catalogue (the ticket service's Event table). */
+export const TICKET_DB = `${BASE_URL}?schema=ticket_e2e`;
+/** What order-api's admin login accepts in the harness. */
+export const ADMIN_PASSWORD = "e2e-admin-password";
 export const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6380";
 export const KAFKA_BROKERS = process.env.KAFKA_BROKERS ?? "localhost:19092";
 
@@ -189,6 +193,7 @@ function procs(extra: HarnessOptions = {}) {
   const orderEnv = {
     // The secret the harness (and the k6 run) mint sessions with.
     SESSION_SECRET: TEST_SESSION_SECRET,
+    ADMIN_PASSWORD,
     DATABASE_URL: ORDER_DB,
     KAFKA_BROKERS,
     REDIS_URL,
@@ -219,6 +224,8 @@ function procs(extra: HarnessOptions = {}) {
       env: {
         PORT: String(PORTS.ticket),
         REDIS_URL,
+        // The catalogue. The scenarios that seed their sales straight into Redis do not use it.
+        DATABASE_URL: TICKET_DB,
         WORKERS: extra.ticketWorkers ?? "2",
         METRICS_PORT: "9464",
         HOLD_TTL_SEC: String(extra.holdTtlSec ?? TIMERS.HOLD_TTL_SEC),
@@ -288,6 +295,7 @@ const HARNESS_USER = "e2e-harness";
 const ORDER_TABLE = `"order_e2e"."Order"`;
 const PROCESSED_TABLE = `"order_e2e"."ProcessedEvent"`;
 const PAYMENT_TABLE = `"payment_e2e"."Payment"`;
+const EVENT_TABLE = `"ticket_e2e"."Event"`;
 
 function dbUrl(url: string): string {
   const u = new URL(url);
@@ -332,6 +340,7 @@ export class Harness {
   async startAll(): Promise<void> {
     await migrate("order", ORDER_DB);
     await migrate("payment-mock", PAYMENT_DB);
+    await migrate("ticket", TICKET_DB);
     await this.redis.ping();
     // Order of dependence: ticket and relay feed the order worker; payment answers it.
     await Promise.all(this.active.map((p) => p.start()));
@@ -397,6 +406,8 @@ export class Harness {
   async resetTables(): Promise<void> {
     await this.orders.query(`TRUNCATE ${ORDER_TABLE}, ${PROCESSED_TABLE}`);
     await this.payments.query(`TRUNCATE ${PAYMENT_TABLE}`);
+    // The same database, another schema: whatever events an earlier run left in the catalogue.
+    await this.orders.query(`TRUNCATE ${EVENT_TABLE}`);
   }
 
   // -- sale and API --

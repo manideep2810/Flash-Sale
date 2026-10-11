@@ -14,7 +14,8 @@
 // Each test starts with empty rate-limit counters (redis-ratelimit is flushed), so no test depends
 // on what another one sent. The numbers below are the test limits:
 //   global   join: 3/min per user, 8/min per address    status: 10/min per user
-//            reserve: 3/s per user                       everything else out of reach
+//            reserve: 3/s per user                       admin login: 4/min per address
+//            everything else out of reach
 //   local    login: a bucket of 5, refilled every 5s     everything else out of reach
 
 import { createHmac, randomUUID } from "node:crypto";
@@ -26,9 +27,10 @@ import {
   mintAdmissionToken,
   TEST_SESSION_SECRET,
 } from "../../../tools/tokens.js";
-import { Harness } from "../phase4/support.js";
+import { ADMIN_PASSWORD, Harness } from "../phase4/support.js";
 import {
   call,
+  createEvent,
   ENVOY_ADMIN,
   forgetSale,
   GATEWAY,
@@ -636,4 +638,76 @@ describe("the gateway", () => {
       );
     }
   }, 120_000);
+
+  it("15. serves the catalogue to anyone, and its admin side to the admin only", async () => {
+    const eventId = `e2e-cat-${randomUUID().slice(0, 8)}`;
+    await createEvent({ id: eventId, name: "Catalogue test", price: 2_500, totalStock: 7 });
+    sales.push(eventId);
+    const admin = { authorization: await bearer("admin", "admin") };
+
+    // No session at all: the listing and the event are public.
+    const listed = await gw("GET", "/api/events");
+    expect(listed.status).toBe(200);
+    const { events } = listed.body as unknown as { events: { id: string }[] };
+    expect(events.map((event) => event.id)).toContain(eventId);
+    const one = await gw("GET", `/api/events/${eventId}`);
+    expect(one.status).toBe(200);
+    expect((one.body as unknown as { event: object }).event).toMatchObject({
+      id: eventId,
+      name: "Catalogue test",
+      price: 2_500,
+      totalStock: 7,
+      available: 7,
+      status: "LIVE",
+    });
+    expect((await gw("GET", "/api/events/no-such-event")).body.code).toBe("EVENT_NOT_FOUND");
+
+    // The admin side. No session: Envoy refuses, and neither service hears of it.
+    for (const path of ["/api/admin/events", "/api/admin/orders/metrics"]) {
+      const anonymous = await gw("GET", path);
+      expect(anonymous.status, path).toBe(401);
+      expect(answeredByEnvoy(anonymous), path).toBe(true);
+
+      // A customer's session passes the gateway and is refused by the service: it is not an admin's.
+      const customer = await gw("GET", path, { as: user("not-admin") });
+      expect(customer.status, path).toBe(403);
+      expect(customer.body.code, path).toBe("FORBIDDEN");
+      expect(answeredByEnvoy(customer), path).toBe(false);
+
+      expect((await gw("GET", path, { headers: admin })).status, path).toBe(200);
+    }
+    // And a customer cannot create one, even with a body that would be valid.
+    const refused = await gw("POST", "/api/admin/events", {
+      as: user("not-admin"),
+      body: { name: "Mine", price: 1, totalStock: 1, lobbyOpensAt: 0, saleOpensAt: 0 },
+    });
+    expect(refused.status).toBe(403);
+  });
+
+  it("16. logs the admin in with the password, and limits the tries from one address", async () => {
+    await clearOfWindowEdge();
+    const tryLogin = (password: string) =>
+      gw("POST", "/api/auth/admin-login", { body: { password } });
+
+    // Three wrong tries are answered by the service.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const wrong = await tryLogin("not-the-password");
+      expect(wrong.status).toBe(401);
+      expect(wrong.body.code).toBe("INVALID_CREDENTIALS");
+    }
+    // The right one issues an admin session, which opens the admin API.
+    const right = await tryLogin(ADMIN_PASSWORD);
+    expect(right.status).toBe(200);
+    expect((right.body as unknown as { role: string }).role).toBe("admin");
+    const opened = await gw("GET", "/api/admin/events", {
+      headers: { authorization: `Bearer ${right.body.token}` },
+    });
+    expect(opened.status).toBe(200);
+
+    // The fifth in the minute is refused by the gateway, right password or not.
+    const fifth = await tryLogin(ADMIN_PASSWORD);
+    expect(fifth.status).toBe(429);
+    expect(fifth.body.code).toBe("RATE_LIMITED");
+    expect(answeredByEnvoy(fifth)).toBe(true);
+  });
 });

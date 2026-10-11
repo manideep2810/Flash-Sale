@@ -7,7 +7,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { Redis } from "ioredis";
-import { TEST_ADMISSION_SECRET, TEST_SESSION_SECRET } from "../../../tools/tokens.js";
+import { bearer, TEST_ADMISSION_SECRET, TEST_SESSION_SECRET } from "../../../tools/tokens.js";
 
 export const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 export const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6380";
@@ -253,6 +253,54 @@ export async function openWaitingRoom(
     ...(price === undefined ? {} : { price: String(price) }),
   });
   await redis.sadd("queue:events", eventId);
+}
+
+export interface EventOptions {
+  id: string;
+  name?: string;
+  /** Per ticket, in the smallest currency unit. */
+  price?: number;
+  totalStock?: number;
+  /** From now, in ms; negative is in the past. The default is a sale that opened a minute ago. */
+  lobbyOpensInMs?: number;
+  saleOpensInMs?: number;
+  admitRatePerSec?: number;
+  admitTtlSec?: number;
+}
+
+/**
+ * Puts an event on sale the way the admin page does: POST /admin/events on the ticket service, with
+ * an admin session minted here. It gets its row in the catalogue, its stock and its waiting room.
+ */
+export async function createEvent({
+  id,
+  name = "Test event",
+  price = 1_999,
+  totalStock = 10,
+  lobbyOpensInMs = -60_000,
+  saleOpensInMs = -60_000,
+  admitRatePerSec = 50,
+  admitTtlSec = 120,
+}: EventOptions): Promise<void> {
+  const now = Date.now();
+  const res = await call(
+    "POST",
+    `${TICKET}/admin/events`,
+    { authorization: await bearer("admin", "admin") },
+    {
+      id,
+      name,
+      price,
+      totalStock,
+      lobbyOpensAt: now + lobbyOpensInMs,
+      saleOpensAt: now + saleOpensInMs,
+      admitRatePerSec,
+      admitTtlSec,
+    },
+  );
+  if (res.status !== 201) {
+    throw new Error(`creating the event "${id}" answered ${res.status} ${res.body.code ?? ""}`);
+  }
 }
 
 /** Removes everything a test sale left in Redis: its waiting room and its inventory. */
