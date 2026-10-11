@@ -21,7 +21,7 @@ if (DATABASE_URL && !enabled) {
 
 const logger = createLogger({ service: "order", level: "silent" });
 
-type Order = { id: string; userId: string };
+type Order = { id: string; userId: string; amount?: number | null };
 
 describe.skipIf(!enabled)("pay, sweeper, timeout and result consumer, against Postgres", () => {
   // Loaded here, not at the top: src/config.ts reads the environment as soon as it is imported.
@@ -60,12 +60,12 @@ describe.skipIf(!enabled)("pay, sweeper, timeout and result consumer, against Po
   /** Inserts orders whose hold ends `expiresInMs` from the database's clock (negative: already over). */
   async function insertOrders(
     ids: string[],
-    { state = "HELD", expiresInMs = 600_000 } = {},
+    { state = "HELD", expiresInMs = 600_000, qty = 1 } = {},
   ): Promise<void> {
     for (const id of ids) {
       await prisma.$executeRaw`
         INSERT INTO ${orderTable} (id, "eventId", "userId", qty, state, "expiresAt", "updatedAt")
-        VALUES (${id}, 'evt', ${`u-${id}`}, 1, ${state}::${orderState},
+        VALUES (${id}, 'evt', ${`u-${id}`}, ${qty}, ${state}::${orderState},
                 (now() AT TIME ZONE 'UTC') + ${expiresInMs} * interval '1 millisecond',
                 (now() AT TIME ZONE 'UTC'))`;
     }
@@ -78,13 +78,18 @@ describe.skipIf(!enabled)("pay, sweeper, timeout and result consumer, against Po
     UPDATE ${orderTable}
        SET "paymentStartedAt" = (now() AT TIME ZONE 'UTC') - ${seconds} * interval '1 second'`;
 
-  /** The pay router on a real listener, with a publisher that records (or fails) instead of using Kafka. */
+  /**
+   * The pay router on a real listener, with a publisher that records (or fails) instead of using
+   * Kafka. `unitPrice` stands in for the price lookup; without it the router has none, as when the
+   * service runs without Redis.
+   */
   async function withPayServer(
     publish: (order: Order) => Promise<void>,
     run: (pay: (id: string) => Promise<Response>) => Promise<void>,
+    unitPrice?: (eventId: string) => Promise<number | null>,
   ) {
     const app = express();
-    app.use(payRoute.createPayRouter({ publish, logger }));
+    app.use(payRoute.createPayRouter({ publish, logger, unitPrice }));
     const server: Server = app.listen(0, "127.0.0.1");
     await once(server, "listening");
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -113,8 +118,75 @@ describe.skipIf(!enabled)("pay, sweeper, timeout and result consumer, against Po
           }
         },
       );
-      expect(published).toEqual([{ id: "o-1", userId: "u-o-1" }]);
+      // No price lookup here, so no amount: the flat PAY_AMOUNT is what gets charged.
+      expect(published).toEqual([{ id: "o-1", userId: "u-o-1", amount: null }]);
       expect(await stateOf("o-1")).toBe("PAYMENT_PENDING");
+    });
+
+    it("charges the event's price times the quantity, and writes that on the order", async () => {
+      await insertOrders(["o-1"], { qty: 3 });
+      const published: Order[] = [];
+      const asked: string[] = [];
+      await withPayServer(
+        async (order) => {
+          published.push(order);
+        },
+        async (pay) => {
+          expect((await pay("o-1")).status).toBe(202);
+          // A second click changes nothing, whatever the price is by then.
+          expect((await pay("o-1")).status).toBe(200);
+        },
+        async (eventId) => {
+          asked.push(eventId);
+          return asked.length === 1 ? 1_999 : 5;
+        },
+      );
+      expect(asked[0]).toBe("evt");
+      expect(published).toEqual([{ id: "o-1", userId: "u-o-1", amount: 5_997 }]);
+      expect((await prisma.order.findUniqueOrThrow({ where: { id: "o-1" } })).amount).toBe(5_997);
+
+      // What the sweeper re-publishes for a lost request is the same sum, from the order.
+      await backdate(60);
+      const again: Order[] = [];
+      await sweeper.sweepStalePayments(logger, async (order) => {
+        again.push(order);
+      });
+      expect(again).toEqual([{ id: "o-1", userId: "u-o-1", amount: 5_997 }]);
+    });
+
+    it("leaves the amount empty for an event that has no price", async () => {
+      await insertOrders(["o-1"], { qty: 2 });
+      const published: Order[] = [];
+      await withPayServer(
+        async (order) => {
+          published.push(order);
+        },
+        async (pay) => {
+          expect((await pay("o-1")).status).toBe(202);
+        },
+        async () => null,
+      );
+      expect(published).toEqual([{ id: "o-1", userId: "u-o-1", amount: null }]);
+    });
+
+    it("a price that cannot be read: 503, the order stays HELD and nothing is published", async () => {
+      await insertOrders(["o-1"]);
+      const published: Order[] = [];
+      await withPayServer(
+        async (order) => {
+          published.push(order);
+        },
+        async (pay) => {
+          const res = await pay("o-1");
+          expect(res.status).toBe(503);
+          expect(await res.json()).toEqual({ error: "PRICE_UNAVAILABLE" });
+        },
+        async () => {
+          throw new Error("redis is down");
+        },
+      );
+      expect(published).toEqual([]);
+      expect(await stateOf("o-1")).toBe("HELD");
     });
 
     it("after expiry: 409 HOLD_EXPIRED and nothing is published", async () => {
@@ -175,7 +247,7 @@ describe.skipIf(!enabled)("pay, sweeper, timeout and result consumer, against Po
       await backdate(61);
       expect((await sweeper.sweepStalePayments(logger, publish)).republished).toBe(1);
       expect((await sweeper.sweepStalePayments(logger, publish)).republished).toBe(0); // clock refreshed
-      expect(published).toEqual([{ id: "o-1", userId: "u-o-1" }]);
+      expect(published).toEqual([{ id: "o-1", userId: "u-o-1", amount: null }]);
       expect(await stateOf("o-1")).toBe("PAYMENT_PENDING");
     });
 

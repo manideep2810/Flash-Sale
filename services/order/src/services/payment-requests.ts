@@ -12,8 +12,15 @@ export interface PaymentRequestedEvent {
   timestamp: string;
 }
 
-/** Publishes PaymentRequested; `/pay` and the stale sweeper both go through this. */
-export type PublishPaymentRequested = (order: { id: string; userId: string }) => Promise<void>;
+/**
+ * Publishes PaymentRequested; `/pay` and the stale sweeper both go through this. `amount` is what
+ * /pay stored on the order (price x quantity); an order without one is charged PAY_AMOUNT.
+ */
+export type PublishPaymentRequested = (order: {
+  id: string;
+  userId: string;
+  amount?: number | null;
+}) => Promise<void>;
 
 export const paymentProducer = kafka.producer({ acks: -1, "enable.idempotence": true });
 
@@ -21,13 +28,13 @@ export const paymentProducer = kafka.producer({ acks: -1, "enable.idempotence": 
  * A fresh eventId each time: the payment service dedupes on the order, not on the event, so a
  * re-publish is a new message about the same order.
  */
-export const publishPaymentRequested: PublishPaymentRequested = async ({ id, userId }) => {
+export const publishPaymentRequested: PublishPaymentRequested = async ({ id, userId, amount }) => {
   const event: PaymentRequestedEvent = {
     type: PAYMENT_REQUESTED,
     eventId: randomUUID(),
     orderId: id,
     userId,
-    amount: config.PAY_AMOUNT,
+    amount: amount ?? config.PAY_AMOUNT,
     timestamp: new Date().toISOString(),
   };
   await paymentProducer.send({
