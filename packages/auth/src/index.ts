@@ -19,6 +19,9 @@ const REJECTIONS = {
   SESSION_EXPIRED: "the session has expired: log in again",
 } as const;
 
+/** The one role there is. A session without it is a customer's. */
+export const ADMIN_ROLE = "admin";
+
 export type SessionRejection = keyof typeof REJECTIONS;
 
 /** Why a request has no caller. Always a 401; the message is fixed text and never holds the token. */
@@ -45,15 +48,19 @@ export interface Session {
   expiresAt: string;
 }
 
-/** Signs a session for `userId`: sub = userId, aud = "session", iss = "order-api", exp = now + 12h. */
+/**
+ * Signs a session for `userId`: sub = userId, aud = "session", iss = "order-api", exp = now + 12h.
+ * `role` adds a role claim; only the admin login passes one.
+ */
 export async function signSession(
   secret: string,
   userId: string,
   now: number = Date.now(),
+  role?: string,
 ): Promise<Session> {
   const issuedAt = Math.floor(now / 1000);
   const expires = issuedAt + SESSION_TTL_SEC;
-  const token = await new SignJWT({})
+  const token = await new SignJWT(role ? { role } : {})
     .setProtectedHeader({ alg: ALGORITHM })
     .setSubject(userId)
     .setAudience(SESSION_AUDIENCE)
@@ -67,6 +74,12 @@ export async function signSession(
 /** Resolves to the session's userId, or rejects with a SessionError. */
 export type VerifySession = (authorization: string | undefined) => Promise<string>;
 
+/** Who a verified session belongs to, and the role it carries, if any. */
+export interface Caller {
+  userId: string;
+  role?: string;
+}
+
 /**
  * Verifies an `Authorization: Bearer <token>` header. The secret is encoded once, here.
  *
@@ -76,6 +89,14 @@ export type VerifySession = (authorization: string | undefined) => Promise<strin
  * client's remedy differs: log in again, as opposed to log in.
  */
 export function createSessionVerifier(secret: string): VerifySession {
+  const verify = createCallerVerifier(secret);
+  return async (authorization) => (await verify(authorization)).userId;
+}
+
+/** As createSessionVerifier, resolving to the caller with their role. */
+export function createCallerVerifier(
+  secret: string,
+): (authorization: string | undefined) => Promise<Caller> {
   const key = keyOf(secret);
   return async (authorization) => {
     const token = /^Bearer\s+(\S+)$/i.exec(authorization ?? "")?.[1];
@@ -93,7 +114,10 @@ export function createSessionVerifier(secret: string): VerifySession {
       if (!payload.sub) {
         throw new SessionError("UNAUTHENTICATED");
       }
-      return payload.sub;
+      return {
+        userId: payload.sub,
+        ...(typeof payload.role === "string" ? { role: payload.role } : {}),
+      };
     } catch (error) {
       throw new SessionError(
         error instanceof errors.JWTExpired ? "SESSION_EXPIRED" : "UNAUTHENTICATED",
@@ -104,7 +128,7 @@ export function createSessionVerifier(secret: string): VerifySession {
 
 // The verified caller of each request in flight. Keyed by the request object, so it cannot be set by
 // anything a client sends, and it goes away with the request.
-const callers = new WeakMap<object, string>();
+const callers = new WeakMap<object, Caller>();
 
 /**
  * Express middleware: lets a request through only with a valid session, and remembers whose it is for
@@ -112,7 +136,7 @@ const callers = new WeakMap<object, string>();
  * SESSION_EXPIRED.
  */
 export function requireSession(secret: string): RequestHandler {
-  const verify = createSessionVerifier(secret);
+  const verify = createCallerVerifier(secret);
   return async (req, res, next) => {
     try {
       callers.set(req, await verify(req.get("authorization")));
@@ -135,9 +159,30 @@ export function requireSession(secret: string): RequestHandler {
  * client's word for it.
  */
 export function getCallerId(req: Request): string {
-  const userId = callers.get(req);
-  if (userId === undefined) {
+  const caller = callers.get(req);
+  if (caller === undefined) {
     throw new Error("getCallerId() needs a route that is behind requireSession()");
   }
-  return userId;
+  return caller.userId;
+}
+
+/**
+ * Express middleware for admin routes: a valid session (401 otherwise, as requireSession) whose role
+ * is "admin" (403 {code: "FORBIDDEN"} otherwise). The role comes from the signed token, which only
+ * the admin login issues: a customer who logs in under the name "admin" has no role and is refused.
+ */
+export function requireAdmin(secret: string): RequestHandler {
+  const authenticate = requireSession(secret);
+  return (req, res, next) =>
+    authenticate(req, res, (error?: unknown) => {
+      if (error) {
+        next(error);
+        return;
+      }
+      if (callers.get(req)?.role !== ADMIN_ROLE) {
+        res.status(403).json({ code: "FORBIDDEN", message: "this needs an admin session" });
+        return;
+      }
+      next();
+    });
 }

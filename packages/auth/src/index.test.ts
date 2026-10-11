@@ -3,8 +3,11 @@ import type { Request, Response } from "express";
 import { jwtVerify } from "jose";
 import { describe, expect, it } from "vitest";
 import {
+  ADMIN_ROLE,
+  createCallerVerifier,
   createSessionVerifier,
   getCallerId,
+  requireAdmin,
   requireSession,
   SESSION_TTL_SEC,
   signSession,
@@ -154,5 +157,65 @@ describe("requireSession", () => {
 
     const headersOnly = await run(undefined, { "x-user-id": "bob", "x-dev-user": "bob" });
     expect(headersOnly.reply).toMatchObject({ passed: false, status: 401 });
+  });
+});
+
+describe("the admin role", () => {
+  it("is a claim in the signed session, and only when asked for", async () => {
+    const verify = createCallerVerifier(SECRET);
+    const admin = await signSession(SECRET, "admin", Date.now(), ADMIN_ROLE);
+    expect(await verify(`Bearer ${admin.token}`)).toEqual({ userId: "admin", role: "admin" });
+
+    // A customer who picked the name "admin" has the name and nothing else.
+    const customer = await signSession(SECRET, "admin");
+    expect(await verify(`Bearer ${customer.token}`)).toEqual({ userId: "admin" });
+  });
+
+  /** Runs requireAdmin on a request with this Authorization header. */
+  async function run(authorization: string | undefined) {
+    const reply: { passed: boolean; status?: number; body?: unknown } = { passed: false };
+    const req = {
+      get: (name: string) => (name.toLowerCase() === "authorization" ? authorization : undefined),
+    } as unknown as Request;
+    const res = {
+      status(code: number) {
+        reply.status = code;
+        return this;
+      },
+      json(body: unknown) {
+        reply.body = body;
+        return this;
+      },
+    } as unknown as Response;
+    await requireAdmin(SECRET)(req, res, () => {
+      reply.passed = true;
+    });
+    return { req, reply };
+  }
+
+  it("requireAdmin passes an admin session on", async () => {
+    const { token } = await signSession(SECRET, "admin", Date.now(), ADMIN_ROLE);
+    const { req, reply } = await run(`Bearer ${token}`);
+    expect(reply).toEqual({ passed: true });
+    expect(getCallerId(req)).toBe("admin");
+  });
+
+  it("requireAdmin answers 403 FORBIDDEN to a customer, and 401 to nobody at all", async () => {
+    const { token } = await signSession(SECRET, "admin");
+    const customer = await run(`Bearer ${token}`);
+    expect(customer.reply).toEqual({
+      passed: false,
+      status: 403,
+      body: { code: "FORBIDDEN", message: expect.any(String) },
+    });
+
+    const anonymous = await run(undefined);
+    expect(anonymous.reply).toMatchObject({ passed: false, status: 401 });
+  });
+
+  it("does not take the role from a token signed with another key", async () => {
+    const elsewhere = await signSession(`${SECRET}-other`, "admin", Date.now(), ADMIN_ROLE);
+    const { reply } = await run(`Bearer ${elsewhere.token}`);
+    expect(reply).toMatchObject({ passed: false, status: 401 });
   });
 });
