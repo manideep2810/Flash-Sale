@@ -1,20 +1,25 @@
 // Shared plumbing for the Phase 5 end-to-end tests: the waiting-room processes as children of the
 // test, a JSON HTTP helper, and seeding and clearing a sale's waiting room in Redis.
 
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { once } from "node:events";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { Redis } from "ioredis";
 import { TEST_ADMISSION_SECRET, TEST_SESSION_SECRET } from "../../../tools/tokens.js";
 
 export const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 export const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6380";
 
+/** The gateway: what a client talks to. */
+export const GATEWAY = "http://localhost:8080";
+export const ENVOY_ADMIN = "http://127.0.0.1:9901";
 /** The services' own addresses, which the tests use to go around the gateway. */
 export const TICKET = "http://localhost:3001";
 export const ORDER_API = "http://localhost:3003";
 export const QUEUE = "http://localhost:4100";
+export const WEB = "http://localhost:3012";
 
 /** What every process that verifies a token is started with: the secrets tools/tokens.ts mints with. */
 export const SECRETS = {
@@ -37,6 +42,38 @@ export async function waitFor(
   }
 }
 
+// ---- docker compose ----------------------------------------------------------------------------------
+
+const run = promisify(execFile);
+const PROJECT = process.env.COMPOSE_PROJECT_NAME ?? "flash-sale";
+const COMPOSE_FILE = `${ROOT}infra/docker/docker-compose.yml`;
+const TEST_OVERRIDE = `${ROOT}infra/docker/docker-compose.test.yml`;
+export const GATEWAY_CONTAINERS = ["envoy", "ratelimit", "redis-ratelimit"];
+
+/**
+ * `docker compose ...` on the local stack. With `testLimits` the gateway's test override is layered
+ * on (infra/docker/docker-compose.test.yml) and the gateway is given the secrets the tests mint
+ * with; without it compose reads them from infra/docker/.env, as `make up` does.
+ */
+export async function compose(args: string[], { testLimits = false } = {}): Promise<string> {
+  const files = testLimits ? ["-f", COMPOSE_FILE, "-f", TEST_OVERRIDE] : ["-f", COMPOSE_FILE];
+  const { stdout } = await run("docker", ["compose", "-p", PROJECT, ...files, ...args], {
+    env: testLimits ? { ...process.env, ...SECRETS } : process.env,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  return stdout;
+}
+
+/** True when Envoy's health checks have passed for every one of the named clusters. */
+export async function clustersHealthy(names: string[]): Promise<boolean> {
+  const text = await (await fetch(`${ENVOY_ADMIN}/clusters`)).text();
+  return names.every((name) =>
+    new RegExp(`^${name}::[^:]+:\\d+::health_flags::healthy$`, "m").test(text),
+  );
+}
+
+// ---- child processes -----------------------------------------------------------------------------------
+
 /** One service process, started the way tests/e2e/phase4/support.ts starts its own. */
 export class Proc {
   #child: ChildProcess | undefined;
@@ -44,8 +81,10 @@ export class Proc {
 
   constructor(
     readonly name: string,
-    private readonly service: string,
-    private readonly entry: string,
+    /** Directory the process runs in, under the repo root. */
+    private readonly dir: string,
+    /** A TypeScript entrypoint (run under tsx), or the full argument list for node. */
+    private readonly entry: string | string[],
     /** Answers 200 once the process is up. */
     private readonly readyUrl: string,
     private readonly env: Record<string, string>,
@@ -69,8 +108,9 @@ export class Proc {
     }
     // `node --import tsx` rather than the tsx CLI: the CLI runs the program in a child of its own,
     // and killing the wrapper would leave the real process alive.
-    const child = spawn(process.execPath, ["--import", "tsx", this.entry], {
-      cwd: `${ROOT}services/${this.service}`,
+    const args = Array.isArray(this.entry) ? this.entry : ["--import", "tsx", this.entry];
+    const child = spawn(process.execPath, args, {
+      cwd: `${ROOT}${this.dir}`,
       env: { ...process.env, NODE_ENV: "test", LOG_LEVEL: "warn", ...this.env },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -108,10 +148,10 @@ export class Proc {
 export function queueProcs(): Proc[] {
   const env = { REDIS_URL, ...SECRETS, PORT: "4100", ADMITTER_PORT: "3011" };
   return [
-    new Proc("queue-svc", "queue", "src/http/server.ts", `${QUEUE}/readyz`, env),
+    new Proc("queue-svc", "services/queue", "src/http/server.ts", `${QUEUE}/readyz`, env),
     new Proc(
       "queue-admitter",
-      "queue",
+      "services/queue",
       "src/admitter/main.ts",
       "http://localhost:3011/healthz",
       env,
@@ -121,7 +161,7 @@ export function queueProcs(): Proc[] {
 
 /** The ticket service alone, for tests that need no orders (the Phase 4 harness has its own). */
 export function ticketProc(): Proc {
-  return new Proc("ticket", "ticket", "src/index.ts", `${TICKET}/healthz/ready`, {
+  return new Proc("ticket", "services/ticket", "src/index.ts", `${TICKET}/healthz/ready`, {
     REDIS_URL,
     ...SECRETS,
     PORT: "3001",
@@ -170,14 +210,47 @@ export async function call(
   return { status: res.status, headers: res.headers, body: parsed };
 }
 
-/** Opens a waiting room for a sale whose stock is already seeded: lobby and sale open a minute ago. */
-export async function openWaitingRoom(redis: Redis, eventId: string): Promise<void> {
+/** The built web app (`next build` must have run), served the way `pnpm -C web start` serves it. */
+export function webProc(): Proc {
+  return new Proc(
+    "web",
+    "web",
+    ["node_modules/next/dist/bin/next", "start", "-p", "3012"],
+    `${WEB}/healthz`,
+    {},
+  );
+}
+
+/** Builds the web app. Slow (tens of seconds), so a suite does it once. */
+export async function buildWeb(): Promise<void> {
+  await run(process.execPath, ["node_modules/next/dist/bin/next", "build"], {
+    cwd: `${ROOT}web`,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+}
+
+export interface WaitingRoomOptions {
+  admitRatePerSec?: number;
+  admitTtlSec?: number;
+  /** What the event page shows. */
+  name?: string;
+  price?: number;
+}
+
+/** Opens a waiting room for a sale: lobby and sale open a minute ago. Stock is seeded separately. */
+export async function openWaitingRoom(
+  redis: Redis,
+  eventId: string,
+  { admitRatePerSec = 50, admitTtlSec = 120, name, price }: WaitingRoomOptions = {},
+): Promise<void> {
   const openedAt = String(Date.now() - 60_000);
   await redis.hset(`ev:${eventId}:config`, {
     lobbyOpensAt: openedAt,
     saleOpensAt: openedAt,
-    admitRatePerSec: "50",
-    admitTtlSec: "120",
+    admitRatePerSec: String(admitRatePerSec),
+    admitTtlSec: String(admitTtlSec),
+    ...(name === undefined ? {} : { name }),
+    ...(price === undefined ? {} : { price: String(price) }),
   });
   await redis.sadd("queue:events", eventId);
 }

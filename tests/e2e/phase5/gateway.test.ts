@@ -17,10 +17,8 @@
 //            reserve: 3/s per user                       everything else out of reach
 //   local    login: a bucket of 5, refilled every 5s     everything else out of reach
 
-import { execFile } from "node:child_process";
 import { createHmac, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { promisify } from "node:util";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   ADMISSION_HEADER,
@@ -31,42 +29,28 @@ import {
 import { Harness } from "../phase4/support.js";
 import {
   call,
+  ENVOY_ADMIN,
   forgetSale,
+  GATEWAY,
+  GATEWAY_CONTAINERS,
   type HttpResult,
+  clustersHealthy as healthy,
   ORDER_API,
   openWaitingRoom,
   QUEUE,
   queueProcs,
-  ROOT,
-  SECRETS,
+  compose as stack,
   TICKET,
   waitFor,
 } from "./support.js";
 
-const GATEWAY = "http://localhost:8080";
-const ENVOY_ADMIN = "http://127.0.0.1:9901";
 const PROMETHEUS = process.env.PROMETHEUS_URL ?? "http://localhost:9090";
 const TICKET_METRICS = "http://localhost:9464/metrics";
 
 // ---- docker compose -----------------------------------------------------------------------------
 
-const run = promisify(execFile);
-const PROJECT = process.env.COMPOSE_PROJECT_NAME ?? "flash-sale";
-const COMPOSE_FILE = `${ROOT}infra/docker/docker-compose.yml`;
-const TEST_OVERRIDE = `${ROOT}infra/docker/docker-compose.test.yml`;
-const GATEWAY_CONTAINERS = ["envoy", "ratelimit", "redis-ratelimit"];
-
-/** `docker compose ...` on the local stack. With the test limits unless told otherwise. */
-async function compose(args: string[], { testLimits = true } = {}): Promise<string> {
-  const files = testLimits ? ["-f", COMPOSE_FILE, "-f", TEST_OVERRIDE] : ["-f", COMPOSE_FILE];
-  const { stdout } = await run("docker", ["compose", "-p", PROJECT, ...files, ...args], {
-    // Under test the gateway verifies with the secrets the tests mint with. Otherwise compose reads
-    // them from infra/docker/.env, as `make up` does.
-    env: testLimits ? { ...process.env, ...SECRETS } : process.env,
-    maxBuffer: 32 * 1024 * 1024,
-  });
-  return stdout;
-}
+/** `docker compose ...` on the local stack, with the gateway's TEST limits unless told otherwise. */
+const compose = (args: string[], { testLimits = true } = {}) => stack(args, { testLimits });
 
 /** Empties the rate limiter's counters: every user and address starts a fresh window. */
 const resetLimits = () => compose(["exec", "-T", "redis-ratelimit", "redis-cli", "flushall"]);
@@ -99,12 +83,7 @@ async function forwardedTo(cluster: string): Promise<number> {
   return stats[0]?.value ?? 0;
 }
 
-async function clustersHealthy(): Promise<boolean> {
-  const text = await (await fetch(`${ENVOY_ADMIN}/clusters`)).text();
-  return ["order-api", "ticket", "queue-svc", "ratelimit"].every((name) =>
-    new RegExp(`^${name}::[^:]+:\\d+::health_flags::healthy$`, "m").test(text),
-  );
-}
+const clustersHealthy = () => healthy(["order-api", "ticket", "queue-svc", "ratelimit"]);
 
 /**
  * True when Envoy answered by itself. A response that came from a service carries the time the
