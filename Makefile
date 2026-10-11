@@ -58,10 +58,10 @@ TARGET_RPS        ?=
 LOG_LEVEL         ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline test-order-db test-payment-db test-queue test-phase5 smoke-phase4 check-invariants loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean load-profile normal-profile
+.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline test-order-db test-payment-db test-queue test-phase5 smoke-phase4 check-invariants loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean load-profile normal-profile load-small load-t1 load-soldout load-expiry load-restart bot-flood
 
 help: ## List available targets
-	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
 # The gateway takes its two secrets from infra/docker/.env, which compose reads for every command.
 $(COMPOSE_ENV): $(COMPOSE_ENV).example
@@ -143,6 +143,94 @@ normal-profile: $(COMPOSE_ENV) ## Gateway back on the normal limits (recreates e
 	$(DOCKER_COMPOSE) up -d --wait --wait-timeout $(WAIT_TIMEOUT) $(GATEWAY_SERVICES)
 	@$(FLUSH_LIMITS) > /dev/null
 	@echo "✓ gateway on the NORMAL profile"
+
+# ---- Waiting-room load runs (tools/load, through the gateway) ------------------
+# Each target seeds a fresh event, plays the crowd (tools/load/waiting-room-sim.ts), then judges the
+# run (tools/check-queue-order.ts: admission order, conservation, the saga invariants). The services
+# must be running with `make dev-loadtest`, NOT `make dev`: with per-request logs going to a
+# terminal they answer a handful of requests a second, and the simulator refuses to start.
+# They leave the gateway on the load profile; `make normal-profile` goes back.
+#
+# Every number is a variable: make load-t1 LOBBY_USERS=2000 JOIN_RATE=500 ADMIT_RATE=100
+SIM   := $(PNPM) -C tools exec tsx load/waiting-room-sim.ts
+CHECK := $(PNPM) -C tools exec tsx check-queue-order.ts
+LOBBY_SEC     ?= 15
+ADMIT_TTL_SEC ?= 120
+NO_SHOW_PCT   ?= 10
+FAIL_PCT      ?= 0
+MAX_SOCKETS   ?= 256
+SIM_FLAGS     ?=
+# One shell command: the simulator with this target's numbers. $(1) is the run's label, and $$id
+# (set by the recipe) its event id.
+sim-run = $(SIM) --label $(1) --eventId $$id \
+	--lobbyUsers $(LOBBY_USERS) --lobbySec $(LOBBY_SEC) \
+	--joinRatePerSec $(JOIN_RATE) --joinDurationSec $(JOIN_SEC) \
+	--admitRate $(ADMIT_RATE) --admitTtlSec $(ADMIT_TTL_SEC) --stock $(STOCK) \
+	--noShowPct $(NO_SHOW_PCT) --failPct $(FAIL_PCT) \
+	--maxRunSec $(MAX_RUN_SEC) --maxSockets $(MAX_SOCKETS) $(SIM_FLAGS)
+run-id = $$(date +%m%d-%H%M%S)
+
+load-small: LOBBY_USERS ?= 500
+load-small: JOIN_RATE   ?= 250
+load-small: JOIN_SEC    ?= 20
+load-small: ADMIT_RATE  ?= 50
+load-small: STOCK       ?= 100000
+load-small: MAX_RUN_SEC ?= 300
+load-small: load-profile ## Small load run: lobby 500, then 250 joins/s for 20s against 50 admitted/s, 100,000 tickets; then the order check
+	@id=load-small-$(run-id); $(call sim-run,small) && $(CHECK) --eventId $$id
+
+load-t1: LOBBY_USERS ?= 10000
+load-t1: LOBBY_SEC   := 30
+load-t1: JOIN_RATE   ?= 2500
+load-t1: JOIN_SEC    ?= 30
+load-t1: ADMIT_RATE  ?= 500
+load-t1: STOCK       ?= 20000
+load-t1: MAX_RUN_SEC ?= 600
+load-t1: MAX_SOCKETS := 512
+load-t1: load-profile ## Full-size run T1: lobby 10,000, then 2,500 joins/s for 30s against 500 admitted/s, 20,000 tickets (scale it: LOBBY_USERS= JOIN_RATE= ADMIT_RATE= STOCK=)
+	@id=load-t1-$(run-id); $(call sim-run,t1) && $(CHECK) --eventId $$id
+
+load-soldout: LOBBY_USERS ?= 1000
+load-soldout: JOIN_RATE   ?= 400
+load-soldout: JOIN_SEC    ?= 10
+load-soldout: ADMIT_RATE  ?= 100
+load-soldout: STOCK       ?= 500
+load-soldout: MAX_RUN_SEC ?= 300
+load-soldout: load-profile ## Sell-out run: 5,000 users for 500 tickets. Expect PAUSED, then SOLD_OUT, and the polling to stop
+	@id=load-soldout-$(run-id); $(call sim-run,soldout) && $(CHECK) --eventId $$id
+
+load-expiry: LOBBY_USERS   ?= 200
+load-expiry: JOIN_RATE     ?= 100
+load-expiry: JOIN_SEC      ?= 10
+load-expiry: ADMIT_RATE    ?= 50
+load-expiry: STOCK         ?= 100000
+load-expiry: ADMIT_TTL_SEC := 10
+load-expiry: NO_SHOW_PCT   := 50
+load-expiry: MAX_RUN_SEC   ?= 300
+load-expiry: SIM_FLAGS     := --rejoinAfterExpiry true
+load-expiry: load-profile ## Expiry run: a 10s turn and half the users walking away. Expect EXPIRED, and rejoins at the back of the line
+	@id=load-expiry-$(run-id); $(call sim-run,expiry) && $(CHECK) --eventId $$id
+
+# The admitter is killed this long after the sale opens, and stays down this long.
+RESTART_AT_SEC   ?= 10
+RESTART_DOWN_SEC ?= 8
+load-restart: LOBBY_USERS ?= 500
+load-restart: JOIN_RATE   ?= 250
+load-restart: JOIN_SEC    ?= 20
+load-restart: ADMIT_RATE  ?= 50
+load-restart: STOCK       ?= 100000
+load-restart: MAX_RUN_SEC ?= 300
+load-restart: load-profile ## load-small with the admitter killed 10s after the sale opens and restarted 8s later (tools/chaos/restart-admitter.sh); the order check must still pass
+	@id=load-restart-$(run-id); \
+	bash tools/chaos/restart-admitter.sh --after $$(( $(LOBBY_SEC) + $(RESTART_AT_SEC) + 2 )) --down $(RESTART_DOWN_SEC) & chaos=$$!; \
+	$(call sim-run,restart); status=$$?; \
+	if [ $$status -ne 0 ]; then kill $$chaos 2> /dev/null; exit $$status; fi; \
+	wait $$chaos; $(CHECK) --eventId $$id
+
+BOT_RATE ?= 10000
+BOT_SEC  ?= 60
+bot-flood: normal-profile ## Bot flood against the NORMAL limits: k6, 10,000 req/s for 60s of tokenless, forged and stolen-token reserves and a join flood, then a verdict (BOT_RATE= BOT_SEC=)
+	$(PNPM) -C tools exec tsx load/bot-flood.ts --totalRate $(BOT_RATE) --durationSec $(BOT_SEC)
 
 loadtest-baseline: ## k6 baseline run streamed to Prometheus/Grafana: VARIANT=redis TARGET_RPS=500 (service via `make dev-loadtest`)
 	@[ -n "$(VARIANT)" ] && [ -n "$(TARGET_RPS)" ] \
