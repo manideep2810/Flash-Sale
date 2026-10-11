@@ -158,8 +158,8 @@ env: ## Create each services/<name>/.env and infra/docker/.env from its .env.exa
 		fi; \
 	done
 
-dev: ## Run all services in watch mode (needs services/<name>/.env - run `make env` once); LOG_LEVEL=warn to override .env
-	$(if $(LOG_LEVEL),LOG_LEVEL=$(LOG_LEVEL)) $(PNPM) -r --parallel --filter "./services/*" run dev
+dev: ## Run all services and the web app in watch mode (needs services/<name>/.env - run `make env` once); LOG_LEVEL=warn to override .env
+	$(if $(LOG_LEVEL),LOG_LEVEL=$(LOG_LEVEL)) $(PNPM) -r --parallel --filter "./services/*" --filter "./web" run dev
 
 dev-loadtest: ## `make dev` with per-request logs dropped (LOG_LEVEL=warn) - use this while running k6
 	$(MAKE) dev LOG_LEVEL=warn

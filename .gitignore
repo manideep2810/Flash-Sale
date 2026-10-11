@@ -1,5 +1,8 @@
 node_modules/
 dist/
+# Next.js build output and its generated type file (web/)
+.next/
+next-env.d.ts
 coverage/
 *.tsbuildinfo
 

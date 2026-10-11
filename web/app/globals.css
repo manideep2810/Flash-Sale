@@ -1,0 +1,95 @@
+/* The one stylesheet. Plain on purpose: this is a working demo of the journey, not a design. */
+
+:root {
+  color-scheme: light dark;
+  --gap: 1rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font:
+    16px / 1.5 system-ui,
+    sans-serif;
+}
+
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap);
+  min-height: 3.25rem;
+  padding: 0.5rem var(--gap);
+  border-bottom: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+}
+
+.bar form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+main {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: var(--gap);
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 0.5rem 0 var(--gap);
+}
+
+p {
+  margin: 0 0 var(--gap);
+}
+
+input,
+select,
+button {
+  font: inherit;
+  padding: 0.35rem 0.6rem;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.notice {
+  margin: 0;
+  font-weight: 600;
+}
+
+.big {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+.countdown {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem var(--gap);
+  margin: 0 0 var(--gap);
+}
+
+dt {
+  opacity: 0.75;
+}
+
+dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
