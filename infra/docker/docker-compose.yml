@@ -43,10 +43,11 @@ services:
       test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
       interval: 5s
 
-  kafka-ui:                     # topics, messages and consumer groups at http://localhost:8080
+  kafka-ui:                     # topics, messages and consumer groups at http://localhost:8081
     image: kafbat/kafka-ui:latest   # pin a version
     depends_on: [redpanda]
-    ports: ["8080:8080"]
+    # host 8081: 8080 belongs to the API gateway (envoy, below)
+    ports: ["8081:8080"]
     environment:
       DYNAMIC_CONFIG_ENABLED: "true"
       KAFKA_CLUSTERS_0_NAME: local-cluster
@@ -91,6 +92,82 @@ services:
       - grafana-storage:/var/lib/grafana
       - ../grafana/provisioning:/etc/grafana/provisioning:ro
       - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+  # ---- API gateway ---------------------------------------------------------------------------
+  # Envoy is the one port clients use. It routes /api/* to the services, checks the session and
+  # admission JWTs at the edge and rate limits in two layers (infra/envoy/envoy.yaml). The services
+  # themselves run on the host (`make dev`), so Envoy reaches them through host.docker.internal.
+  envoy:
+    image: envoyproxy/envoy:v1.39.3
+    depends_on: [ratelimit]
+    # envoy.yaml is a template: the entrypoint fills in the JWT keys and the local limits from the
+    # environment below, then starts Envoy. No secret is in the file itself.
+    entrypoint: ["/bin/sh", "/etc/envoy/gateway/entrypoint.sh"]
+    env_file: [../envoy/limits.env]
+    environment:
+      # From infra/docker/.env (see .env.example). The same values the services run with.
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in infra/docker/.env, see .env.example}
+      ADMISSION_SECRET: ${ADMISSION_SECRET:?set ADMISSION_SECRET in infra/docker/.env, see .env.example}
+    ports:
+      - "8080:8080"             # the API
+      - "127.0.0.1:9901:9901"   # admin, this machine only: its config dump shows the JWT keys
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - ../envoy:/etc/envoy/gateway:ro
+    healthcheck:
+      # The image has no curl or wget. This asks the admin port whether Envoy is serving; it says
+      # nothing about the services behind it, which Envoy health-checks itself.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9901 &&
+          printf 'GET /ready HTTP/1.1\r\nHost: envoy\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q LIVE <&3
+      interval: 5s
+
+  # The global rate-limit service Envoy asks: per-user and per-address counters per route, with the
+  # limits in infra/ratelimit/config/. gRPC on 8081, /healthcheck on 8080, /metrics on 9090; none
+  # of them is published, only Envoy and Prometheus talk to it.
+  ratelimit:
+    image: envoyproxy/ratelimit:f4e76690   # this image has only commit-hash tags; master of 2026-10-06
+    depends_on:
+      redis-ratelimit:
+        condition: service_healthy
+    environment:
+      LOG_LEVEL: warn
+      REDIS_SOCKET_TYPE: tcp
+      REDIS_URL: redis-ratelimit:6379
+      # Config is read from RUNTIME_ROOT/RUNTIME_SUBDIRECTORY/config/*.yaml, once at start.
+      RUNTIME_ROOT: /data
+      RUNTIME_SUBDIRECTORY: ratelimit
+      RUNTIME_WATCH_ROOT: "false"
+      RUNTIME_IGNOREDOTFILES: "true"
+      USE_STATSD: "false"
+      USE_PROMETHEUS: "true"
+      PROMETHEUS_ADDR: ":9090"
+    volumes:
+      - ../ratelimit/config:/data/ratelimit/config:ro
+
+  # Counters for the rate limiter, and nothing else: deliberately NOT the inventory Redis, so a
+  # flood of rate-limit keys can never evict or slow down stock. Every key it holds has a TTL and
+  # losing them all only resets the windows, so it keeps nothing on disk.
+  redis-ratelimit:
+    image: redis:7.4
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 128mb
+      - --maxmemory-policy
+      - volatile-ttl
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
 
 volumes:
   prometheus-data:

@@ -13,6 +13,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { checkInvariants } from "../../../tools/check-invariants.js";
+import { TEST_ADMISSION_SECRET, TEST_SESSION_SECRET } from "../../../tools/tokens.js";
 import { describeReport, Harness, ROOT } from "./support.js";
 
 const run = process.argv[2] ?? "run1";
@@ -89,6 +90,9 @@ async function main() {
       LABEL: run,
       EVENT_ID: sale,
       TOTAL: String(TOTAL),
+      // k6 mints a session and an admission token per user; the services were started with these.
+      SESSION_SECRET: TEST_SESSION_SECRET,
+      ADMISSION_SECRET: TEST_ADMISSION_SECRET,
       K6_PROMETHEUS_RW_SERVER_URL:
         process.env.PROMETHEUS_RW_URL ?? "http://localhost:9090/api/v1/write",
       K6_PROMETHEUS_RW_TREND_STATS: "p(50),p(95),p(99),avg,max",

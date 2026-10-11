@@ -52,6 +52,46 @@ scrape_configs:
       # 3008-3010 are extra payment processes, started by the load run (tests/e2e/phase4/run-load.ts).
       - targets: ["host.docker.internal:3004", "host.docker.internal:3008", "host.docker.internal:3009", "host.docker.internal:3010"]
 
+  # Phase 5 waiting room. Two processes of one codebase (services/queue/.env.example): queue-svc on
+  # PORT serves joins and status, and the single admitter serves only /healthz and /metrics on
+  # ADMITTER_PORT.
+  - job_name: queue
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:4100"]
+
+  - job_name: queue-admitter
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:3011"]
+
+  # Phase 5 gateway. Both are containers on the compose network, so they are reached by service name.
+  # Envoy serves its stats on the admin port: per-cluster upstream series, the local rate limit's
+  # counters, and envoy_gateway_requests{route, code, reason}, which infra/envoy/envoy.yaml builds from
+  # the access log so that 401s and 429s can be told apart per route.
+  - job_name: envoy
+    scrape_interval: 5s
+    metrics_path: /stats/prometheus
+    static_configs:
+      - targets: ["envoy:9901"]
+
+  # The global rate-limit service: ratelimit_service_rate_limit_{total_hits,over_limit,...} per limit.
+  - job_name: ratelimit
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["ratelimit:9090"]
+
+  # The rate limiter's own Redis (counters only), through the same exporter: /scrape?target=... makes
+  # it read another Redis than the one it was started for. Its commands/sec is how hard the global
+  # rate limit is working.
+  - job_name: redis-ratelimit
+    scrape_interval: 5s
+    metrics_path: /scrape
+    params:
+      target: ["redis://redis-ratelimit:6379"]
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
   # Stream length and the relay group's unread and pending counts, read straight from Redis by
   # redis_exporter. Unlike the relay's own gauges these keep reporting while the relay is down. It is
   # a container on the same compose network, so it is reached by service name.

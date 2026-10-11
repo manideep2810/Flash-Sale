@@ -12,6 +12,7 @@
 //   RATE         reserve attempts per second (default 5000)
 //   DURATION     how long the rush lasts (default 60s)
 //   PRE_VUS / MAX_VUS   VU pool; winners sleep inside their iteration, so MAX_VUS bounds in-flight journeys
+//   SESSION_SECRET, ADMISSION_SECRET   must match the services (see loadtest/lib/tokens.js)
 //
 // Every reserve that wins a hold follows one journey, chosen up front by the user id prefix the mock
 // payment service keys on (NODE_ENV=test): 70% ok- (pays, succeeds), 10% fail- (pays, fails), 20% never pay.
@@ -20,6 +21,7 @@
 import http from "k6/http";
 import { sleep } from "k6";
 import { Counter, Trend } from "k6/metrics";
+import { ADMISSION_HEADER, bearer, mintAdmissionToken } from "./lib/tokens.js";
 
 const TICKET_URL = __ENV.TICKET_URL || "http://localhost:3001";
 const ORDER_URL = __ENV.ORDER_URL || "http://localhost:3003";
@@ -77,12 +79,21 @@ export default function () {
   const roll = Math.random();
   const prefix = roll < 0.7 ? "ok" : roll < 0.8 ? "fail" : "plain";
   const userId = `${prefix}-${__VU}-${__ITER}`;
+  // The rush starts after the login and the waiting room: each user arrives logged in and admitted.
+  const session = { Authorization: bearer(userId) };
 
   reserveAttempts.add(1);
   const reserve = http.post(
     `${TICKET_URL}/redis/reserve`,
-    JSON.stringify({ eventId: EVENT_ID, userId, qty: 1 }),
-    { headers: { "content-type": "application/json" }, tags: { name: "reserve" } },
+    JSON.stringify({ eventId: EVENT_ID, qty: 1 }),
+    {
+      headers: {
+        "content-type": "application/json",
+        ...session,
+        [ADMISSION_HEADER]: mintAdmissionToken(userId, EVENT_ID),
+      },
+      tags: { name: "reserve" },
+    },
   );
   reserveMs.add(reserve.timings.duration);
   if (reserve.status === 409) {
@@ -104,6 +115,7 @@ export default function () {
   let pay;
   for (let attempt = 0; attempt < 10; attempt++) {
     pay = http.post(`${ORDER_URL}/orders/${encodeURIComponent(orderId)}/pay`, null, {
+      headers: session,
       tags: { name: "pay" },
     });
     if (pay.status !== 404) {
@@ -124,6 +136,7 @@ export default function () {
 
   for (let waited = 0; waited < TERMINAL_TIMEOUT_S; waited++) {
     const order = http.get(`${ORDER_URL}/orders/${encodeURIComponent(orderId)}`, {
+      headers: session,
       tags: { name: "poll" },
     });
     if (order.status === 200 && TERMINAL.indexOf(JSON.parse(order.body).state) !== -1) {

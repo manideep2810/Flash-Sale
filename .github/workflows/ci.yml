@@ -69,7 +69,11 @@ jobs:
       - name: Install dependencies (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
-      - name: Start infrastructure (postgres, redis, redpanda, jaeger) and wait until healthy
+      # The gateway container takes its two JWT secrets from this file; the example holds test values.
+      - name: Create the compose env file
+        run: cp infra/docker/.env.example infra/docker/.env
+
+      - name: Start infrastructure (postgres, redis, redpanda, jaeger, gateway) and wait until healthy
         run: docker compose -f "$COMPOSE_FILE" up -d --wait --wait-timeout 180
 
       # Only skips when no workspace defines the script; once one does, its failures are real.

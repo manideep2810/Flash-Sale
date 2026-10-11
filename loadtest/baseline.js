@@ -7,6 +7,8 @@
 //   TARGET_RPS  peak arrival rate, requests/second          (required)
 //   BASE_URL    ticket service origin (default http://localhost:3001)
 //   EVENT_ID    inventory row to hammer (default baseline-load)
+//   SESSION_SECRET, ADMISSION_SECRET   redis variant only: must match the ticket service
+//                                      (see loadtest/lib/tokens.js)
 //
 // Writes loadtest/results/<variant>-<rps>.json; run from the repo root.
 //
@@ -21,6 +23,7 @@
 import { check } from "k6";
 import http from "k6/http";
 import { Counter } from "k6/metrics";
+import { ADMISSION_HEADER, bearer, mintAdmissionToken } from "./lib/tokens.js";
 
 // "redis" is the phase-2 hot path (Lua over Redis); the rest are the phase-1 SQL variants.
 const VARIANTS = ["naive", "pessimistic", "atomic", "optimistic", "redis"];
@@ -95,11 +98,24 @@ export function setup() {
 }
 
 export default function () {
+  const userId = `u-${__VU}-${__ITER}`;
+  // Only /redis/reserve sits behind the login and the waiting room; the SQL variants take no token
+  // and read the user from the body. The run measures the reserve path, so each request carries a
+  // session and an admission token minted here for its own user. (The body is the same for both;
+  // /redis/reserve ignores its userId and uses the session's.)
+  const headers =
+    VARIANT === "redis"
+      ? {
+          ...JSON_HEADERS,
+          Authorization: bearer(userId),
+          [ADMISSION_HEADER]: mintAdmissionToken(userId, EVENT_ID),
+        }
+      : JSON_HEADERS;
   const res = http.post(
     `${BASE_URL}${RESERVE_PATH}`,
-    JSON.stringify({ eventId: EVENT_ID, userId: `u-${__VU}-${__ITER}`, qty: 1 }),
+    JSON.stringify({ eventId: EVENT_ID, userId, qty: 1 }),
     {
-      headers: JSON_HEADERS,
+      headers,
       tags: { name: "reserve" },
       // 409 is a valid business outcome, not a transport failure.
       responseCallback: http.expectedStatuses(201, 409),

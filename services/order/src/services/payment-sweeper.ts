@@ -32,8 +32,8 @@ export async function measureOldestPending(): Promise<number> {
 export async function claimStale(
   staleMs = STALE_AFTER_MS,
   limit = BATCH,
-): Promise<{ id: string; userId: string }[]> {
-  return prisma.$queryRaw<{ id: string; userId: string }[]>`
+): Promise<{ id: string; userId: string; amount: number | null }[]> {
+  return prisma.$queryRaw<{ id: string; userId: string; amount: number | null }[]>`
     UPDATE ${ORDER_TABLE}
        SET "paymentStartedAt" = (now() AT TIME ZONE 'UTC'),
            "updatedAt" = (now() AT TIME ZONE 'UTC')
@@ -43,7 +43,7 @@ export async function claimStale(
                    ORDER BY "paymentStartedAt"
                    LIMIT ${limit}
                    FOR UPDATE SKIP LOCKED)
-    RETURNING id, "userId"`;
+    RETURNING id, "userId", amount`;
 }
 
 export interface SweepOptions {

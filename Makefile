@@ -10,6 +10,7 @@ endif
 
 # ---- Docker Compose ----------------------------------------------------------
 COMPOSE_FILE         ?= infra/docker/docker-compose.yml
+COMPOSE_ENV          := $(dir $(COMPOSE_FILE)).env
 COMPOSE_PROJECT_NAME ?= flash-sale
 DOCKER_COMPOSE       ?= docker compose -p $(COMPOSE_PROJECT_NAME) -f $(COMPOSE_FILE)
 WAIT_TIMEOUT         ?= 120
@@ -39,6 +40,14 @@ TOPICS_SH        := COMPOSE_PROJECT_NAME=$(COMPOSE_PROJECT_NAME) COMPOSE_FILE=$(
 
 PNPM ?= pnpm
 
+# ---- The gateway's profiles ---------------------------------------------------
+# The load profile is docker-compose.load.yml layered on the normal file: higher local buckets and
+# no per-address limit, because a load run plays a whole crowd from one address.
+LOAD_OVERRIDE    := infra/docker/docker-compose.load.yml
+GATEWAY_SERVICES := envoy ratelimit
+# Empties the rate limiter's counters, so windows counted under one profile do not carry into the other.
+FLUSH_LIMITS     := $(DOCKER_COMPOSE) exec -T redis-ratelimit redis-cli flushall
+
 # ---- Load testing (k6 -> Prometheus remote write -> Grafana) -----------------
 K6                ?= k6
 PROMETHEUS_RW_URL ?= http://localhost:9090/api/v1/write
@@ -49,12 +58,16 @@ TARGET_RPS        ?=
 LOG_LEVEL         ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline test-order-db test-payment-db smoke-phase4 check-invariants loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean
+.PHONY: help up down logs ps shell-db shell-redis topics migrate baseline-db seed test test-baseline test-order-db test-payment-db test-queue test-phase5 smoke-phase4 check-invariants loadtest-baseline test-watch lint typecheck check env dev dev-loadtest clean load-profile normal-profile load-small load-t1 load-soldout load-expiry load-restart bot-flood
 
 help: ## List available targets
-	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
+	@awk 'BEGIN { FS = ":.*## " } /^[a-zA-Z0-9_-]+:.*## / { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-up: ## Start the stack, block until every container is healthy, then create the reservation topics
+# The gateway takes its two secrets from infra/docker/.env, which compose reads for every command.
+$(COMPOSE_ENV): $(COMPOSE_ENV).example
+	@if [ -f "$@" ]; then touch "$@"; else cp "$<" "$@" && echo "created  $@"; fi
+
+up: $(COMPOSE_ENV) ## Start the stack, block until every container is healthy, then create the reservation topics
 	$(DOCKER_COMPOSE) up -d --wait --wait-timeout $(WAIT_TIMEOUT)
 	$(TOPICS_SH)
 	@echo "✓ Stack ready"
@@ -94,8 +107,8 @@ baseline-db: ## Apply infra/sql/baseline.sql (baseline schema: inventory + holds
 	$(DOCKER_COMPOSE) exec -T -e PGPASSWORD=$(POSTGRES_PASSWORD) postgres \
 		psql -v ON_ERROR_STOP=1 -U $(POSTGRES_USER) -d $(POSTGRES_DB) < infra/sql/baseline.sql
 
-seed: ## Load seed data (placeholder - nothing to seed yet)
-	@echo "seed: no seed data defined yet"
+seed: ## Put a handful of demo events in the catalogue (needs `make dev` and `make migrate`); safe to re-run
+	$(PNPM) -C tools run seed-events
 
 test: ## Run unit tests in every workspace
 	$(PNPM) -r run test
@@ -109,11 +122,115 @@ test-order-db: ## Run the order payment-claim/timeout tests against a throwaway 
 test-payment-db: ## Run the payment-mock request-handling tests against a throwaway `payment_test` schema in the local postgres
 	DATABASE_URL="$(DATABASE_URL_BASE)?schema=payment_test" $(PNPM) -C services/payment-mock run test:db
 
+test-queue: ## Run the waiting-room tests (queue-svc and the admitter) against the local redis
+	REDIS_URL="$(REDIS_URL)" $(PNPM) -C services/queue run test
+
+test-phase5: ## Waiting room and gateway end to end, through Envoy on :8080 with the test limits (needs `make up`; stop `make dev` first)
+	$(PNPM) -C tests/e2e run test:phase5
+
 smoke-phase4: ## reserve -> pay -> wait for the payment -> check invariants (needs `make dev` and the stack up)
 	$(PNPM) -C tools run smoke-phase4
 
 check-invariants: ## Check the saga invariants (I1-I4) against the running stack: make check-invariants [EVENT=evt-001]
 	$(PNPM) -C tools run check-invariants $(EVENT)
+
+load-profile: $(COMPOSE_ENV) ## Gateway on the LOAD limits: no per-address limit, higher local buckets (recreates envoy and ratelimit if they differ)
+	$(DOCKER_COMPOSE) -f $(LOAD_OVERRIDE) up -d --wait --wait-timeout $(WAIT_TIMEOUT) $(GATEWAY_SERVICES)
+	@$(FLUSH_LIMITS) > /dev/null
+	@echo "✓ gateway on the LOAD profile (go back with: make normal-profile)"
+
+normal-profile: $(COMPOSE_ENV) ## Gateway back on the normal limits (recreates envoy and ratelimit if they differ)
+	$(DOCKER_COMPOSE) up -d --wait --wait-timeout $(WAIT_TIMEOUT) $(GATEWAY_SERVICES)
+	@$(FLUSH_LIMITS) > /dev/null
+	@echo "✓ gateway on the NORMAL profile"
+
+# ---- Waiting-room load runs (tools/load, through the gateway) ------------------
+# Each target seeds a fresh event, plays the crowd (tools/load/waiting-room-sim.ts), then judges the
+# run (tools/check-queue-order.ts: admission order, conservation, the saga invariants). The services
+# must be running with `make dev-loadtest`, NOT `make dev`: with per-request logs going to a
+# terminal they answer a handful of requests a second, and the simulator refuses to start.
+# They leave the gateway on the load profile; `make normal-profile` goes back.
+#
+# Every number is a variable: make load-t1 LOBBY_USERS=2000 JOIN_RATE=500 ADMIT_RATE=100
+SIM   := $(PNPM) -C tools exec tsx load/waiting-room-sim.ts
+CHECK := $(PNPM) -C tools exec tsx check-queue-order.ts
+LOBBY_SEC     ?= 15
+ADMIT_TTL_SEC ?= 120
+NO_SHOW_PCT   ?= 10
+FAIL_PCT      ?= 0
+MAX_SOCKETS   ?= 256
+SIM_FLAGS     ?=
+# One shell command: the simulator with this target's numbers. $(1) is the run's label, and $$id
+# (set by the recipe) its event id.
+sim-run = $(SIM) --label $(1) --eventId $$id \
+	--lobbyUsers $(LOBBY_USERS) --lobbySec $(LOBBY_SEC) \
+	--joinRatePerSec $(JOIN_RATE) --joinDurationSec $(JOIN_SEC) \
+	--admitRate $(ADMIT_RATE) --admitTtlSec $(ADMIT_TTL_SEC) --stock $(STOCK) \
+	--noShowPct $(NO_SHOW_PCT) --failPct $(FAIL_PCT) \
+	--maxRunSec $(MAX_RUN_SEC) --maxSockets $(MAX_SOCKETS) $(SIM_FLAGS)
+run-id = $$(date +%m%d-%H%M%S)
+
+load-small: LOBBY_USERS ?= 500
+load-small: JOIN_RATE   ?= 250
+load-small: JOIN_SEC    ?= 20
+load-small: ADMIT_RATE  ?= 50
+load-small: STOCK       ?= 100000
+load-small: MAX_RUN_SEC ?= 300
+load-small: load-profile ## Small load run: lobby 500, then 250 joins/s for 20s against 50 admitted/s, 100,000 tickets; then the order check
+	@id=load-small-$(run-id); $(call sim-run,small) && $(CHECK) --eventId $$id
+
+load-t1: LOBBY_USERS ?= 10000
+load-t1: LOBBY_SEC   := 30
+load-t1: JOIN_RATE   ?= 2500
+load-t1: JOIN_SEC    ?= 30
+load-t1: ADMIT_RATE  ?= 500
+load-t1: STOCK       ?= 20000
+load-t1: MAX_RUN_SEC ?= 600
+load-t1: MAX_SOCKETS := 512
+load-t1: load-profile ## Full-size run T1: lobby 10,000, then 2,500 joins/s for 30s against 500 admitted/s, 20,000 tickets (scale it: LOBBY_USERS= JOIN_RATE= ADMIT_RATE= STOCK=)
+	@id=load-t1-$(run-id); $(call sim-run,t1) && $(CHECK) --eventId $$id
+
+load-soldout: LOBBY_USERS ?= 1000
+load-soldout: JOIN_RATE   ?= 400
+load-soldout: JOIN_SEC    ?= 10
+load-soldout: ADMIT_RATE  ?= 100
+load-soldout: STOCK       ?= 500
+load-soldout: MAX_RUN_SEC ?= 300
+load-soldout: load-profile ## Sell-out run: 5,000 users for 500 tickets. Expect PAUSED, then SOLD_OUT, and the polling to stop
+	@id=load-soldout-$(run-id); $(call sim-run,soldout) && $(CHECK) --eventId $$id
+
+load-expiry: LOBBY_USERS   ?= 200
+load-expiry: JOIN_RATE     ?= 100
+load-expiry: JOIN_SEC      ?= 10
+load-expiry: ADMIT_RATE    ?= 50
+load-expiry: STOCK         ?= 100000
+load-expiry: ADMIT_TTL_SEC := 10
+load-expiry: NO_SHOW_PCT   := 50
+load-expiry: MAX_RUN_SEC   ?= 300
+load-expiry: SIM_FLAGS     := --rejoinAfterExpiry true
+load-expiry: load-profile ## Expiry run: a 10s turn and half the users walking away. Expect EXPIRED, and rejoins at the back of the line
+	@id=load-expiry-$(run-id); $(call sim-run,expiry) && $(CHECK) --eventId $$id
+
+# The admitter is killed this long after the sale opens, and stays down this long.
+RESTART_AT_SEC   ?= 10
+RESTART_DOWN_SEC ?= 8
+load-restart: LOBBY_USERS ?= 500
+load-restart: JOIN_RATE   ?= 250
+load-restart: JOIN_SEC    ?= 20
+load-restart: ADMIT_RATE  ?= 50
+load-restart: STOCK       ?= 100000
+load-restart: MAX_RUN_SEC ?= 300
+load-restart: load-profile ## load-small with the admitter killed 10s after the sale opens and restarted 8s later (tools/chaos/restart-admitter.sh); the order check must still pass
+	@id=load-restart-$(run-id); \
+	bash tools/chaos/restart-admitter.sh --after $$(( $(LOBBY_SEC) + $(RESTART_AT_SEC) + 2 )) --down $(RESTART_DOWN_SEC) & chaos=$$!; \
+	$(call sim-run,restart); status=$$?; \
+	if [ $$status -ne 0 ]; then kill $$chaos 2> /dev/null; exit $$status; fi; \
+	wait $$chaos; $(CHECK) --eventId $$id
+
+BOT_RATE ?= 10000
+BOT_SEC  ?= 60
+bot-flood: normal-profile ## Bot flood against the NORMAL limits: k6, 10,000 req/s for 60s of tokenless, forged and stolen-token reserves and a join flood, then a verdict (BOT_RATE= BOT_SEC=)
+	$(PNPM) -C tools exec tsx load/bot-flood.ts --totalRate $(BOT_RATE) --durationSec $(BOT_SEC)
 
 loadtest-baseline: ## k6 baseline run streamed to Prometheus/Grafana: VARIANT=redis TARGET_RPS=500 (service via `make dev-loadtest`)
 	@[ -n "$(VARIANT)" ] && [ -n "$(TARGET_RPS)" ] \
@@ -137,8 +254,8 @@ typecheck: ## Typecheck every workspace
 check: ## Biome over the whole repo (root files included), then typecheck every workspace
 	$(PNPM) run check
 
-env: ## Create each services/<name>/.env from its .env.example (never overwrites an existing .env)
-	@for example in services/*/.env.example; do \
+env: ## Create each services/<name>/.env and infra/docker/.env from its .env.example (never overwrites an existing .env)
+	@for example in services/*/.env.example $(COMPOSE_ENV).example; do \
 		target="$${example%.example}"; \
 		if [ -f "$$target" ]; then \
 			echo "kept     $$target"; \
@@ -147,8 +264,8 @@ env: ## Create each services/<name>/.env from its .env.example (never overwrites
 		fi; \
 	done
 
-dev: ## Run all services in watch mode (needs services/<name>/.env - run `make env` once); LOG_LEVEL=warn to override .env
-	$(if $(LOG_LEVEL),LOG_LEVEL=$(LOG_LEVEL)) $(PNPM) -r --parallel --filter "./services/*" run dev
+dev: ## Run all services and the web app in watch mode (needs services/<name>/.env - run `make env` once); LOG_LEVEL=warn to override .env
+	$(if $(LOG_LEVEL),LOG_LEVEL=$(LOG_LEVEL)) $(PNPM) -r --parallel --filter "./services/*" --filter "./web" run dev
 
 dev-loadtest: ## `make dev` with per-request logs dropped (LOG_LEVEL=warn) - use this while running k6
 	$(MAKE) dev LOG_LEVEL=warn

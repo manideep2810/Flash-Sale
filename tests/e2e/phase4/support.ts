@@ -12,6 +12,12 @@ import { promisify } from "node:util";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { Redis } from "ioredis";
 import pg from "pg";
+import {
+  bearer,
+  reserveHeaders,
+  TEST_ADMISSION_SECRET,
+  TEST_SESSION_SECRET,
+} from "../../../tools/tokens.js";
 
 const run = promisify(execFile);
 export const ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -22,6 +28,10 @@ const BASE_URL = "postgresql://app:app@localhost:5434/flashsale";
 /** Dedicated schemas: the scenarios truncate them, and `order` / `payment-mock` stay untouched. */
 export const ORDER_DB = `${BASE_URL}?schema=order_e2e`;
 export const PAYMENT_DB = `${BASE_URL}?schema=payment_e2e`;
+/** The catalogue (the ticket service's Event table). */
+export const TICKET_DB = `${BASE_URL}?schema=ticket_e2e`;
+/** What order-api's admin login accepts in the harness. */
+export const ADMIN_PASSWORD = "e2e-admin-password";
 export const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6380";
 export const KAFKA_BROKERS = process.env.KAFKA_BROKERS ?? "localhost:19092";
 
@@ -181,6 +191,9 @@ export interface HarnessOptions {
 function procs(extra: HarnessOptions = {}) {
   const timers = Object.fromEntries(Object.entries(TIMERS).map(([k, v]) => [k, String(v)]));
   const orderEnv = {
+    // The secret the harness (and the k6 run) mint sessions with.
+    SESSION_SECRET: TEST_SESSION_SECRET,
+    ADMIN_PASSWORD,
     DATABASE_URL: ORDER_DB,
     KAFKA_BROKERS,
     REDIS_URL,
@@ -211,9 +224,14 @@ function procs(extra: HarnessOptions = {}) {
       env: {
         PORT: String(PORTS.ticket),
         REDIS_URL,
+        // The catalogue. The scenarios that seed their sales straight into Redis do not use it.
+        DATABASE_URL: TICKET_DB,
         WORKERS: extra.ticketWorkers ?? "2",
         METRICS_PORT: "9464",
         HOLD_TTL_SEC: String(extra.holdTtlSec ?? TIMERS.HOLD_TTL_SEC),
+        // The secrets reserve() below, and the k6 run, mint their tokens with.
+        SESSION_SECRET: TEST_SESSION_SECRET,
+        ADMISSION_SECRET: TEST_ADMISSION_SECRET,
       },
     }),
     relay: new Proc({
@@ -272,9 +290,12 @@ export async function waitFor(
 
 // ---- The harness: stack + clients ----------------------------------------------------------------
 
+const HARNESS_USER = "e2e-harness";
+
 const ORDER_TABLE = `"order_e2e"."Order"`;
 const PROCESSED_TABLE = `"order_e2e"."ProcessedEvent"`;
 const PAYMENT_TABLE = `"payment_e2e"."Payment"`;
+const EVENT_TABLE = `"ticket_e2e"."Event"`;
 
 function dbUrl(url: string): string {
   const u = new URL(url);
@@ -319,6 +340,7 @@ export class Harness {
   async startAll(): Promise<void> {
     await migrate("order", ORDER_DB);
     await migrate("payment-mock", PAYMENT_DB);
+    await migrate("ticket", TICKET_DB);
     await this.redis.ping();
     // Order of dependence: ticket and relay feed the order worker; payment answers it.
     await Promise.all(this.active.map((p) => p.start()));
@@ -384,6 +406,8 @@ export class Harness {
   async resetTables(): Promise<void> {
     await this.orders.query(`TRUNCATE ${ORDER_TABLE}, ${PROCESSED_TABLE}`);
     await this.payments.query(`TRUNCATE ${PAYMENT_TABLE}`);
+    // The same database, another schema: whatever events an earlier run left in the catalogue.
+    await this.orders.query(`TRUNCATE ${EVENT_TABLE}`);
   }
 
   // -- sale and API --
@@ -404,11 +428,12 @@ export class Harness {
     return eventId;
   }
 
+  /** Reserves as `userId`, logged in and admitted: the harness mints the session and the admission. */
   async reserve(eventId: string, userId: string, qty = 1): Promise<string | undefined> {
     const res = await fetch(`http://localhost:${PORTS.ticket}/redis/reserve`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ eventId, userId, qty }),
+      headers: { "content-type": "application/json", ...(await reserveHeaders(userId, eventId)) },
+      body: JSON.stringify({ eventId, qty }),
     });
     if (res.status === 409) {
       return undefined;
@@ -433,15 +458,19 @@ export class Harness {
     return id;
   }
 
-  pay(orderId: string): Promise<Response> {
+  // The order API wants a session but does not check whose order it is, so the harness calls it as
+  // one user of its own.
+  async pay(orderId: string): Promise<Response> {
     return fetch(`http://localhost:${PORTS.orderApi}/orders/${encodeURIComponent(orderId)}/pay`, {
       method: "POST",
+      headers: { authorization: await bearer(HARNESS_USER) },
     });
   }
 
   async apiOrder(orderId: string): Promise<{ state: string } | undefined> {
     const res = await fetch(
       `http://localhost:${PORTS.orderApi}/orders/${encodeURIComponent(orderId)}`,
+      { headers: { authorization: await bearer(HARNESS_USER) } },
     );
     return res.status === 200 ? ((await res.json()) as { state: string }) : undefined;
   }

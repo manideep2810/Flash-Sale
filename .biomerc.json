@@ -3,7 +3,15 @@
   "root": true,
   "files": {
     "ignoreUnknown": true,
-    "includes": ["**", "!**/dist", "!**/coverage", "!**/src/generated", "!loadtest/results"]
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/coverage",
+      "!**/src/generated",
+      "!loadtest/results",
+      "!**/.next",
+      "!**/next-env.d.ts"
+    ]
   },
   "formatter": {
     "enabled": true,

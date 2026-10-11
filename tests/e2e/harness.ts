@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { KafkaJS } from "@confluentinc/kafka-javascript";
 import { Redis } from "ioredis";
 import pg from "pg";
+import { reserveHeaders, TEST_ADMISSION_SECRET, TEST_SESSION_SECRET } from "../../tools/tokens.js";
 
 const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -193,7 +194,14 @@ export async function startFixture(): Promise<Fixture> {
     );
   }
 
-  const ticket = new Service("ticket", 3001, { REDIS_URL, WORKERS: "2", METRICS_PORT: "9464" });
+  // The ticket service is given the secrets this harness mints its tokens with (see reserve()).
+  const ticket = new Service("ticket", 3001, {
+    REDIS_URL,
+    WORKERS: "2",
+    METRICS_PORT: "9464",
+    SESSION_SECRET: TEST_SESSION_SECRET,
+    ADMISSION_SECRET: TEST_ADMISSION_SECRET,
+  });
   const relay = new Service("relay", 3002, { REDIS_URL, KAFKA_BROKERS });
   const order = new Service("order", 3003, { DATABASE_URL, KAFKA_BROKERS });
   const services = [ticket, relay, order];
@@ -208,10 +216,10 @@ export async function startFixture(): Promise<Fixture> {
     throw error;
   }
 
-  const postJson = (path: string, body: unknown) =>
+  const postJson = (path: string, body: unknown, headers: Record<string, string> = {}) =>
     fetch(`${ticket.url}${path}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...headers },
       body: JSON.stringify(body),
     });
 
@@ -240,7 +248,13 @@ export async function startFixture(): Promise<Fixture> {
         Array.from({ length: Math.min(50, count) }, async () => {
           while (next < count) {
             const userId = `${userPrefix}-${next++}`;
-            const res = await postJson("/redis/reserve", { eventId, userId, qty: 1 });
+            // These scenarios start after the login and the waiting room, so the harness signs each
+            // user in and admits them itself.
+            const res = await postJson(
+              "/redis/reserve",
+              { eventId, qty: 1 },
+              await reserveHeaders(userId, eventId),
+            );
             const body = await res.text();
             if (res.status === 201) {
               held++;

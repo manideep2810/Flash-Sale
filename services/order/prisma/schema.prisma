@@ -15,6 +15,7 @@ model Order {
   eventId          String // Which event
   userId           String // Which user
   qty              Int // How many tickets
+  amount           Int? // What /pay asked the payment service for, smallest currency unit; null until then
   state            OrderState @default(HELD) // Current state (HELD, PAID, CONFIRMED, etc.)
   expiresAt        DateTime // When the hold expires
   holdSettledAt    DateTime? // When the order's Redis hold was confirmed (PAID) or released (-> RELEASED); null until then

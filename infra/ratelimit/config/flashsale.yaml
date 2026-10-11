@@ -1,0 +1,38 @@
+# Global rate limits, enforced by the envoyproxy/ratelimit service with counters in redis-ratelimit.
+#
+# Envoy sends two descriptors for each limited request (the rate_limits on the routes in
+# infra/envoy/envoy.yaml), and each is counted on its own:
+#   (generic_key=<route>, user_id=<the session's user>)     one counter per user per route
+#   (generic_key=<route>, remote_address=<client address>)  one counter per address per route
+# A request is refused when either is over. login and admin-login have no user yet, so they send only
+# the second. orders, the catalogue and the admin API have no global limit and send nothing.
+#
+# The keys are the ones Envoy emits: generic_key is the default descriptor key of the generic_key
+# action, remote_address that of the remote_address action, and user_id is the descriptor_key the
+# routes give the x-user-id header.
+domain: flashsale
+descriptors:
+  - key: generic_key
+    value: login
+    descriptors:
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 60 } }
+  - key: generic_key
+    value: admin-login
+    descriptors:
+      # One fixed password stands behind this route: ten tries a minute from one address, no more.
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 10 } }
+  - key: generic_key
+    value: join
+    descriptors:
+      - { key: user_id, rate_limit: { unit: minute, requests_per_unit: 5 } }
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 600 } }
+  - key: generic_key
+    value: status
+    descriptors:
+      - { key: user_id, rate_limit: { unit: minute, requests_per_unit: 60 } }
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 6000 } }
+  - key: generic_key
+    value: reserve
+    descriptors:
+      - { key: user_id, rate_limit: { unit: second, requests_per_unit: 5 } }
+      - { key: remote_address, rate_limit: { unit: second, requests_per_unit: 500 } }

@@ -1,7 +1,12 @@
 import cluster from "node:cluster";
+import { requireAdmin, requireSession } from "@flash/auth";
 import { createLogger } from "@flash/observability";
+import { admissionNotRequired, createRequireAdmission } from "./admission.js";
 import { getPool } from "./baseline/db.js";
-import { config } from "./config.js";
+import { createEventLive } from "./catalogue/live.js";
+import { createEventStore, type EventStore } from "./catalogue/store.js";
+import { createUploadSigner } from "./catalogue/uploads.js";
+import { parseConfig } from "./config.js";
 import { collectWorkerMetrics, startMetricsServer } from "./metrics.js";
 import {
   createReserveScript,
@@ -14,6 +19,11 @@ import { startServer } from "./server.js";
 // Process model: the primary forks WORKERS node:cluster workers that all accept on PORT (one Node
 // thread cannot drive a flash-sale burst alone), and serves /metrics for the whole set on
 // METRICS_PORT. Workers run the HTTP app; each opens its own Redis/Postgres pools.
+//
+// The config is parsed here, in the primary as well as in each worker, so a bad one (ADMISSION_SECRET
+// or SESSION_SECRET missing or short, REQUIRE_ADMISSION=false in production) stops the primary before
+// it forks.
+const config = parseConfig();
 const logger = createLogger({ service: config.SERVICE_NAME, level: config.LOG_LEVEL });
 
 if (cluster.isPrimary) {
@@ -55,6 +65,12 @@ function runPrimary(): void {
     fork();
   }
   log.info("primary started", { workers: config.WORKERS, metricsPort: config.METRICS_PORT });
+  if (!config.REQUIRE_ADMISSION) {
+    // Once, from the primary, not once per worker.
+    log.warn(
+      "REQUIRE_ADMISSION=false: /redis/reserve is not checking admission tokens. Benchmarks only.",
+    );
+  }
 
   const metricsServer = startMetricsServer({ port: config.METRICS_PORT, logger: log });
 
@@ -93,14 +109,47 @@ async function runWorker(): Promise<void> {
     log.info("reserve.lua loaded", { sha: reserveScript.sha, connections: redisPool.size });
   }
 
+  // The secret is read and encoded once, here, at startup.
+  const requireAdmission = config.REQUIRE_ADMISSION
+    ? createRequireAdmission({ secret: config.ADMISSION_SECRET, logger: log })
+    : admissionNotRequired;
+
+  // The catalogue keeps its rows in Postgres and its live half in Redis, so it needs both.
+  let eventStore: EventStore | undefined;
+  if (config.DATABASE_URL && redisPool) {
+    eventStore = createEventStore(config.DATABASE_URL);
+  } else {
+    log.warn("the catalogue is off: it needs both DATABASE_URL and REDIS_URL");
+  }
+  const uploads =
+    config.CLOUDINARY_CLOUD_NAME && config.CLOUDINARY_API_KEY && config.CLOUDINARY_API_SECRET
+      ? createUploadSigner({
+          cloudName: config.CLOUDINARY_CLOUD_NAME,
+          apiKey: config.CLOUDINARY_API_KEY,
+          apiSecret: config.CLOUDINARY_API_SECRET,
+          folder: config.CLOUDINARY_FOLDER,
+        })
+      : undefined;
+
   startServer({
     port: config.PORT,
     logger: log,
     baselinePool,
     reserveScript,
     redisPool,
+    authenticate: requireSession(config.SESSION_SECRET),
+    requireAdmission,
+    catalogue:
+      eventStore && redisPool
+        ? {
+            store: eventStore,
+            live: createEventLive(redisPool),
+            requireAdmin: requireAdmin(config.SESSION_SECRET),
+            uploads,
+          }
+        : undefined,
     closeClients: async () => {
-      await Promise.all([baselinePool?.end(), redisPool?.quit()]);
+      await Promise.all([baselinePool?.end(), redisPool?.quit(), eventStore?.close()]);
     },
   });
 }

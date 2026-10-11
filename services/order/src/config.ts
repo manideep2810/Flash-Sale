@@ -1,4 +1,4 @@
-import { baseEnvSchema, loadEnv } from "@flash/config";
+import { baseEnvSchema, hmacSecretSchema, loadEnv } from "@flash/config";
 import { z } from "zod";
 
 const envSchema = baseEnvSchema.extend({
@@ -7,7 +7,10 @@ const envSchema = baseEnvSchema.extend({
   DATABASE_URL: z.url(),
   /** Comma-separated host:port list. Redpanda locally; anything that speaks the Kafka protocol. */
   KAFKA_BROKERS: z.string().min(1),
-  /** What every order is charged, in the smallest currency unit (orders carry no price yet). */
+  /**
+   * What an order is charged, in the smallest currency unit, when its event has no price in the
+   * catalogue. An event with a price is charged price x quantity (routes/pay.ts).
+   */
   PAY_AMOUNT: z.coerce.number().int().positive().default(999),
   /** How often the timeout job looks for HELD orders past their hold. */
   TIMEOUT_JOB_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
@@ -21,6 +24,17 @@ const envSchema = baseEnvSchema.extend({
   RESULT_CONSUMER_CONCURRENCY: z.coerce.number().int().min(1).max(64).default(1),
   /** Redis holding the holds and inventory; required by the worker, which settles holds. */
   REDIS_URL: z.url().optional(),
+  /**
+   * Signs sessions at the dev login and verifies them on /orders. Required by the API, which checks
+   * for it at boot; the worker takes no requests and never needs it. The same value every service
+   * that verifies a session is given.
+   */
+  SESSION_SECRET: hmacSecretSchema.optional(),
+  /**
+   * The one fixed password of the admin login (POST /auth/admin-login). When it is not set there is
+   * no admin login at all.
+   */
+  ADMIN_PASSWORD: z.string().min(8).optional(),
 });
 
 export type Config = z.infer<typeof envSchema>;

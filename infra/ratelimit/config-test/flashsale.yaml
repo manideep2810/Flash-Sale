@@ -1,0 +1,31 @@
+# Global rate limits for the gateway tests (tests/e2e/phase5/gateway.test.ts), mounted in place of
+# ../config/flashsale.yaml by infra/docker/docker-compose.test.yml. Same keys and same units as the
+# real file, with numbers small enough to reach in a handful of requests. The address limits that no
+# test is about are set far out of reach, so that only the limit under test can refuse a request.
+domain: flashsale
+descriptors:
+  - key: generic_key
+    value: login
+    descriptors:
+      # Out of reach: the login test is about the local bucket (limits.test.env).
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 100000 } }
+  - key: generic_key
+    value: admin-login
+    descriptors:
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 4 } }
+  - key: generic_key
+    value: join
+    descriptors:
+      - { key: user_id, rate_limit: { unit: minute, requests_per_unit: 3 } }
+      # Reached by three users together: 4 + 3 + 1 requests, and the ninth is refused.
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 8 } }
+  - key: generic_key
+    value: status
+    descriptors:
+      - { key: user_id, rate_limit: { unit: minute, requests_per_unit: 10 } }
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 100000 } }
+  - key: generic_key
+    value: reserve
+    descriptors:
+      - { key: user_id, rate_limit: { unit: second, requests_per_unit: 3 } }
+      - { key: remote_address, rate_limit: { unit: second, requests_per_unit: 100000 } }

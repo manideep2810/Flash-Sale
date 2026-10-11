@@ -1,0 +1,18 @@
+# Test overrides for the gateway: the same three containers with limits small enough to reach in a
+# test. Used on top of docker-compose.yml, never alone:
+#
+#   docker compose -p flash-sale -f infra/docker/docker-compose.yml -f infra/docker/docker-compose.test.yml \
+#     up -d --wait envoy ratelimit redis-ratelimit
+#
+# tests/e2e/phase5/gateway.test.ts runs that itself before its tests and puts the normal limits back
+# afterwards. If a run is cut short, `make up` puts them back too: it recreates any container whose
+# configuration differs from docker-compose.yml.
+services:
+  envoy:
+    # Appended to the env_file list of docker-compose.yml, so these values win over limits.env.
+    env_file: [../envoy/limits.test.env]
+
+  ratelimit:
+    volumes:
+      # Same mount point as in docker-compose.yml, so this replaces that mount.
+      - ../ratelimit/config-test:/data/ratelimit/config:ro

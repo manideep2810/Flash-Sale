@@ -3,5 +3,5 @@
   "compilerOptions": {
     "noEmit": true
   },
-  "include": ["*.ts", "phase4/*.ts"]
+  "include": ["*.ts", "phase4/*.ts", "phase5/*.ts"]
 }

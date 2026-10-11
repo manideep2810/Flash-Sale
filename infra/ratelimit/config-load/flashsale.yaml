@@ -1,0 +1,34 @@
+# Global rate limits for LOAD RUNS, mounted in place of ../config/flashsale.yaml by
+# infra/docker/docker-compose.load.yml (`make load-profile`; `make normal-profile` goes back).
+#
+# A load run plays tens of thousands of users from one machine, so they all share one client
+# address. The per-ADDRESS limits on join, status and reserve are therefore set far out of reach.
+# The per-USER limits are the real ones, unchanged from ../config/flashsale.yaml: a simulated user
+# that asks more often than a real one may is refused here exactly as a real one would be.
+#
+# The bot-flood run does NOT use this file: it is run against the normal limits.
+domain: flashsale
+descriptors:
+  - key: generic_key
+    value: login
+    descriptors:
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 60 } }
+  - key: generic_key
+    value: admin-login
+    descriptors:
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 10 } }
+  - key: generic_key
+    value: join
+    descriptors:
+      - { key: user_id, rate_limit: { unit: minute, requests_per_unit: 5 } }
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 10000000 } }
+  - key: generic_key
+    value: status
+    descriptors:
+      - { key: user_id, rate_limit: { unit: minute, requests_per_unit: 60 } }
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 10000000 } }
+  - key: generic_key
+    value: reserve
+    descriptors:
+      - { key: user_id, rate_limit: { unit: second, requests_per_unit: 5 } }
+      - { key: remote_address, rate_limit: { unit: second, requests_per_unit: 10000000 } }

@@ -1,0 +1,22 @@
+# The gateway's LOAD profile: the same containers with limits that let one machine play a crowd.
+# Used on top of docker-compose.yml, never alone:
+#
+#   make load-profile      # this file layered on: recreates envoy and ratelimit with the load limits
+#   make normal-profile    # docker-compose.yml alone: recreates them with the normal limits
+#
+# What changes, and nothing else:
+#   envoy       local buckets: status 15,000/s, join 5,000/s, reserve 2,000/s (infra/envoy/limits.load.env)
+#   ratelimit   per-ADDRESS limits on join, status and reserve out of reach; per-USER limits as they
+#               really are (infra/ratelimit/config-load/)
+#
+# `make up` also puts the normal limits back: it recreates any container whose configuration
+# differs from docker-compose.yml.
+services:
+  envoy:
+    # Appended to the env_file list of docker-compose.yml, so these values win over limits.env.
+    env_file: [../envoy/limits.load.env]
+
+  ratelimit:
+    volumes:
+      # Same mount point as in docker-compose.yml, so this replaces that mount.
+      - ../ratelimit/config-load:/data/ratelimit/config:ro

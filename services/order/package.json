@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@confluentinc/kafka-javascript": "catalog:",
+    "@flash/auth": "workspace:*",
     "@flash/config": "workspace:*",
     "@flash/kafka": "workspace:*",
     "@flash/observability": "workspace:*",
@@ -33,6 +34,7 @@
   "devDependencies": {
     "@types/express": "catalog:",
     "@types/node": "catalog:",
+    "jose": "catalog:",
     "prisma": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",

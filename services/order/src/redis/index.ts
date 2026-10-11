@@ -13,6 +13,26 @@ export const soldKey = (eventId: string): string => `ev:${eventId}:sold`;
 export const heldKey = (eventId: string): string => `ev:${eventId}:held`;
 
 /**
+ * The event's config hash, written by the ticket service's catalogue (and by the seed script) and
+ * read here only for the price.
+ */
+export const eventConfigKey = (eventId: string): string => `ev:${eventId}:config`;
+
+/**
+ * Reads an event's price per unit (smallest currency unit) from its config hash. Null when the
+ * event has no price there, which is how events seeded without the catalogue look.
+ */
+export function createPriceReader(
+  redis: Pick<Redis, "hget">,
+): (eventId: string) => Promise<number | null> {
+  return async (eventId) => {
+    const raw = await redis.hget(eventConfigKey(eventId), "price");
+    const price = Number(raw);
+    return raw !== null && Number.isInteger(price) && price > 0 ? price : null;
+  };
+}
+
+/**
  * The .lua files are runtime assets, not modules, so tsc does not emit them into dist/. The first
  * candidate covers `pnpm dev` (tsx, out of src/) and a dist/ the build copied them into; the second
  * falls back from dist/redis/ to src/redis/.

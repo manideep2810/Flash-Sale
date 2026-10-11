@@ -10,6 +10,7 @@
 
 import { setTimeout as sleep } from "node:timers/promises";
 import { checkInvariants, printReport } from "./check-invariants.js";
+import { bearer, reserveHeaders } from "./tokens.js";
 
 const TICKET_URL = process.env.TICKET_URL ?? "http://localhost:3001";
 const ORDER_URL = process.env.ORDER_URL ?? "http://localhost:3003";
@@ -37,10 +38,10 @@ async function json(url: string, init?: RequestInit): Promise<{ status: number; 
   return { status: res.status, body: text ? (JSON.parse(text) as Reply) : {} };
 }
 
-const post = (url: string, body?: unknown) =>
+const post = (url: string, body?: unknown, headers: Record<string, string> = {}) =>
   json(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
@@ -63,11 +64,16 @@ async function main(): Promise<boolean> {
     throw new Error(`reset answered ${reset.status}`);
   }
 
-  const reserve = await post(`${TICKET_URL}/redis/reserve`, {
-    eventId: EVENT_ID,
-    userId: "smoke-user",
-    qty: 2,
-  });
+  // Every call needs a session, and reserve an admission token as well. This script stands in for
+  // the login and the waiting room and mints both, which works as long as its secrets are the
+  // services' (see tools/tokens.ts).
+  const userId = "smoke-user";
+  const session = { authorization: await bearer(userId) };
+  const reserve = await post(
+    `${TICKET_URL}/redis/reserve`,
+    { eventId: EVENT_ID, qty: 2 },
+    await reserveHeaders(userId, EVENT_ID),
+  );
   if (reserve.status !== 201) {
     throw new Error(`reserve answered ${reserve.status} ${JSON.stringify(reserve.body)}`);
   }
@@ -78,12 +84,18 @@ async function main(): Promise<boolean> {
   mark(`reserved: hold ${orderId}`);
 
   await poll("the order to appear", async () => {
-    const o = await json(`${ORDER_URL}/orders/${encodeURIComponent(orderId)}`);
+    const o = await json(`${ORDER_URL}/orders/${encodeURIComponent(orderId)}`, {
+      headers: session,
+    });
     return o.status === 200 ? o.body : undefined;
   });
   mark("order created in state HELD (relay -> Kafka -> order worker)");
 
-  const pay = await post(`${ORDER_URL}/orders/${encodeURIComponent(orderId)}/pay`);
+  const pay = await post(
+    `${ORDER_URL}/orders/${encodeURIComponent(orderId)}/pay`,
+    undefined,
+    session,
+  );
   mark(`pay answered ${pay.status} ${JSON.stringify(pay.body)}`);
   if (pay.status !== 202) {
     throw new Error("pay was not accepted");
@@ -91,7 +103,9 @@ async function main(): Promise<boolean> {
 
   // PAYMENT_FAILED is followed by RELEASED once the hold is settled, so either ends the wait.
   const decided = await poll("the payment to be decided", async () => {
-    const o = await json(`${ORDER_URL}/orders/${encodeURIComponent(orderId)}`);
+    const o = await json(`${ORDER_URL}/orders/${encodeURIComponent(orderId)}`, {
+      headers: session,
+    });
     const state = o.body.state;
     return state && ["PAID", "PAYMENT_FAILED", "RELEASED"].includes(state) ? state : undefined;
   });

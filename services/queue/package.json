@@ -5,17 +5,23 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "dev": "tsx watch --env-file-if-exists=.env src/index.ts",
-    "start": "node --env-file-if-exists=.env dist/index.js",
+    "dev": "pnpm run --parallel \"/^dev:/\"",
+    "dev:api": "tsx watch --env-file-if-exists=.env src/http/server.ts",
+    "dev:admitter": "tsx watch --env-file-if-exists=.env src/admitter/main.ts",
+    "start:api": "node --env-file-if-exists=.env dist/http/server.js",
+    "start:admitter": "node --env-file-if-exists=.env dist/admitter/main.js",
     "lint": "biome check --config-path=../../.biomerc.json .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
+    "@flash/auth": "workspace:*",
     "@flash/config": "workspace:*",
     "@flash/observability": "workspace:*",
     "express": "catalog:",
     "ioredis": "catalog:",
+    "jose": "catalog:",
+    "prom-client": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

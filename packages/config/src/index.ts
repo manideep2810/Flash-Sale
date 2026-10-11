@@ -9,6 +9,13 @@ export const baseEnvSchema = z.object({
 
 export type BaseEnv = z.infer<typeof baseEnvSchema>;
 
+/** An HS256 signing secret: at least 32 bytes, so the key is as wide as the hash. */
+export const hmacSecretSchema = z
+  .string()
+  .refine((secret) => Buffer.byteLength(secret, "utf8") >= 32, {
+    error: "must be at least 32 bytes",
+  });
+
 /**
  * Validates the environment against `schema`, failing fast at boot. Missing required variables are
  * listed by name; anything else invalid gets Zod's per-field report.

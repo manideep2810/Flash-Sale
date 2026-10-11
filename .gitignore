@@ -1,5 +1,8 @@
 node_modules/
 dist/
+# Next.js build output and its generated type file (web/)
+.next/
+next-env.d.ts
 coverage/
 *.tsbuildinfo
 
@@ -14,3 +17,5 @@ services/*/src/generated/
 
 # k6 output (loadtest/baseline.js)
 loadtest/results/*.json
+# Load-run output (tools/load/): one log, summary and Redis picture per run
+loadtest/results/phase5/

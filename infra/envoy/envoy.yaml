@@ -1,0 +1,614 @@
+# The API gateway: the only port clients use (8080). Mounted into the envoy container by
+# infra/docker/docker-compose.yml.
+#
+# THIS FILE IS A TEMPLATE. entrypoint.sh fills in each dollar-brace placeholder from the
+# container's environment at start and runs Envoy on the result, so no secret is committed here:
+#   ${SESSION_JWK_K}, ${ADMISSION_JWK_K}   the two HS256 keys, from SESSION_SECRET and ADMISSION_SECRET
+#   ${LOCAL_*}                             the local rate-limit numbers, from limits.env
+#
+# The services run on the host (`make dev`), not in compose, so the clusters at the bottom point at
+# host.docker.internal. Each service keeps its own paths; the routes rewrite /api/... onto them.
+# Everything that is not /api goes to the web app (web/), which makes its API calls back through here.
+#
+# What a request passes through, in order:
+#   1. local rate limit   one token bucket per route for this Envoy: overload protection, whoever asks
+#   2. jwt_authn          the session on every /api route but the two logins and the public event
+#                         listing, plus the admission token on reserve. A request that fails here
+#                         never reaches a service.
+#   3. global rate limit  per user and per client address, counted by the ratelimit service
+#                         (infra/ratelimit/config/flashsale.yaml). Fails open.
+#   4. router
+#
+# The services check the session and the admission token again themselves. This is the first
+# check, not the only one.
+
+admin:
+  # Stats (/stats/prometheus), clusters and the config dump. The config dump includes the JWT keys,
+  # so this port is published to 127.0.0.1 only and must never be exposed further.
+  address:
+    socket_address: { address: 0.0.0.0, port_value: 9901 }
+
+static_resources:
+  listeners:
+    - name: api
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8080 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: gateway
+                codec_type: AUTO
+                # This is the edge. The client's address is the socket's, never one a header claims.
+                use_remote_address: true
+                xff_num_trusted_hops: 0
+                # Every request gets an x-request-id here; it is passed upstream and the services log it.
+                generate_request_id: true
+                # x-user-id is the gateway's own header: whatever a client sent under that name is dropped
+                # before anything looks at the request, and jwt_authn then sets it from the verified session.
+                early_header_mutation_extensions:
+                  - name: envoy.http.early_header_mutation.header_mutation
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.http.early_header_mutation.header_mutation.v3.HeaderMutation
+                      mutations:
+                        - remove: x-user-id
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          time: "%START_TIME%"
+                          request_id: "%REQ(X-REQUEST-ID)%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%"
+                          route: "%ROUTE_NAME%"
+                          status: "%RESPONSE_CODE%"
+                          # flags is set when Envoy answered itself (NR = no route, RL = rate limited); details
+                          # says exactly why: jwt_authn_access_denied{...} is the token check, local_rate_limited
+                          # the local bucket, request_rate_limited the global service, via_upstream a service.
+                          flags: "%RESPONSE_FLAGS%"
+                          details: "%RESPONSE_CODE_DETAILS%"
+                          user: "%REQ(X-USER-ID)%"
+                          client: "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%"
+                          upstream: "%UPSTREAM_CLUSTER%"
+                          duration_ms: "%DURATION%"
+                  # One counter per (route, status, reason), which is how Prometheus gets 401s and 429s per route:
+                  # Envoy's own per-route stats come from the router, and a request refused by an earlier filter
+                  # never gets that far. `reason` is the response-code detail, so a 429 from the local bucket
+                  # (local_rate_limited) and one from the global service (request_rate_limited) stay apart.
+                  - name: envoy.access_loggers.stats
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stats.v3.Config
+                      stat_prefix: gateway
+                      counters:
+                        - stat:
+                            name: requests
+                            tags:
+                              - { name: route, value_format: "%ROUTE_NAME%" }
+                              - { name: code, value_format: "%RESPONSE_CODE%" }
+                              - { name: reason, value_format: "%RESPONSE_CODE_DETAILS%" }
+                          value_fixed: 1
+                # What Envoy answers when it refuses a request itself: JSON {code, message}, like the services.
+                local_reply_config:
+                  mappers:
+                    - filter:
+                        status_code_filter:
+                          comparison: { op: EQ, value: { default_value: 401, runtime_key: gateway.local_reply.unauthenticated } }
+                      body_format_override:
+                        json_format: { code: UNAUTHENTICATED, message: "%LOCAL_REPLY_BODY%" }
+                    # jwt_authn answers 403 for one failure only: a token that verifies but was issued for another
+                    # audience (an admission token offered as a session, say). To the caller that is the same as any
+                    # other token that is not a session, so it is answered the same way. Envoy makes no other 403 of
+                    # its own, and a 403 from a service is not a local reply and passes through untouched.
+                    - filter:
+                        status_code_filter:
+                          comparison: { op: EQ, value: { default_value: 403, runtime_key: gateway.local_reply.wrong_audience } }
+                      status_code: 401
+                      body_format_override:
+                        json_format: { code: UNAUTHENTICATED, message: "%LOCAL_REPLY_BODY%" }
+                    - filter:
+                        status_code_filter:
+                          comparison: { op: EQ, value: { default_value: 429, runtime_key: gateway.local_reply.rate_limited } }
+                      # Retry-After: the global limit says how long until its window resets (x-ratelimit-reset, in
+                      # seconds). ADD_IF_ABSENT leaves alone the "1" a local-limit reply already carries.
+                      headers_to_add:
+                        - append_action: ADD_IF_ABSENT
+                          header: { key: retry-after, value: "%RESP(X-RATELIMIT-RESET)%" }
+                      body_format_override:
+                        json_format: { code: RATE_LIMITED, message: "too many requests, retry later" }
+                http_filters:
+                  # 1. Local rate limit. Nothing is limited here; each route that has a limit carries its own bucket
+                  #    (typed_per_filter_config on the route), and the numbers come from limits.env.
+                  - name: envoy.filters.http.local_ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                      stat_prefix: local_rate_limit
+                  # JWT check. Two providers, both HS256 with a key from the environment (entrypoint.sh): a JWK that
+                  # names its algorithm only verifies tokens signed with that algorithm, so `none` and HS512 fail.
+                  - name: envoy.filters.http.jwt_authn
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.jwt_authn.v3.JwtAuthentication
+                      providers:
+                        # Who the caller is: issued by order-api's login, sent as "Authorization: Bearer <token>".
+                        session:
+                          issuer: order-api
+                          audiences: [session]
+                          from_headers:
+                            - { name: Authorization, value_prefix: "Bearer " }
+                          forward: true
+                          clock_skew_seconds: 2
+                          local_jwks:
+                            inline_string: '{"keys":[{"kty":"oct","alg":"HS256","k":"${SESSION_JWK_K}"}]}'
+                          # For the rate limiter only. The services never read it: they verify the token themselves.
+                          claim_to_headers:
+                            - { header_name: x-user-id, claim_name: sub }
+                        # That the waiting room admitted them: issued by queue-svc, sent as "X-Admission-Token".
+                        admission:
+                          issuer: queue-svc
+                          audiences: [reserve]
+                          from_headers:
+                            - { name: x-admission-token }
+                          forward: true
+                          clock_skew_seconds: 2
+                          local_jwks:
+                            inline_string: '{"keys":[{"kty":"oct","alg":"HS256","k":"${ADMISSION_JWK_K}"}]}'
+                      rules:
+                        # The first rule that matches decides.
+                        - match: { path: /api/auth/dev-login }
+                        - match: { path: /api/auth/admin-login }
+                        # The catalogue is public. (Its admin side is under /api/admin and needs a session.)
+                        - match: { path: /api/events }
+                        - match: { prefix: /api/events/ }
+                        - match: { path: /api/reserve }
+                          requires:
+                            requires_all:
+                              requirements:
+                                - provider_name: session
+                                - provider_name: admission
+                        - match: { prefix: /api/ }
+                          requires: { provider_name: session }
+                  # Global rate limit: asks the ratelimit service about the descriptors of the matched route.
+                  - name: envoy.filters.http.ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit
+                      domain: flashsale
+                      # Fail OPEN: if the ratelimit service is slow or down, requests go through. The JWT check
+                      # above and the services' own checks still stand, and the admission token still gates reserve.
+                      failure_mode_deny: false
+                      timeout: 0.05s
+                      # x-ratelimit-limit / -remaining / -reset on the responses of limited routes.
+                      enable_x_ratelimit_headers: DRAFT_VERSION_03
+                      rate_limit_service:
+                        transport_api_version: V3
+                        grpc_service:
+                          envoy_grpc: { cluster_name: ratelimit }
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: api
+                  virtual_hosts:
+                    - name: api
+                      domains: ["*"]
+                      # Each route's name is also its rate-limit key and its label in the metrics. POST routes
+                      # are never retried.
+                      routes:
+                        # POST /api/auth/dev-login -> order-api /auth/dev-login
+                        # No session yet, so the global limit is per client address only.
+                        - name: login
+                          match:
+                            path: /api/auth/dev-login
+                            headers: [{ name: ":method", string_match: { exact: POST } }]
+                          route:
+                            cluster: order-api
+                            prefix_rewrite: /auth/dev-login
+                            timeout: 2s
+                            rate_limits:
+                              - actions:
+                                  - generic_key: { descriptor_value: login }
+                                  - remote_address: {}
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_login
+                              token_bucket:
+                                max_tokens: ${LOCAL_LOGIN_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_LOGIN_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # POST /api/auth/admin-login -> order-api /auth/admin-login
+                        # One fixed password stands behind this, so the limit per client address is small: it is
+                        # what keeps a guesser to a handful of tries a minute.
+                        - name: admin-login
+                          match:
+                            path: /api/auth/admin-login
+                            headers: [{ name: ":method", string_match: { exact: POST } }]
+                          route:
+                            cluster: order-api
+                            prefix_rewrite: /auth/admin-login
+                            timeout: 2s
+                            rate_limits:
+                              - actions:
+                                  - generic_key: { descriptor_value: admin-login }
+                                  - remote_address: {}
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_admin_login
+                              token_bucket:
+                                max_tokens: ${LOCAL_ADMIN_LOGIN_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_ADMIN_LOGIN_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # GET /api/events, GET /api/events/:eventId -> ticket service /events, /events/:eventId
+                        # The catalogue. Public: the listing is what a visitor sees before logging in. The local
+                        # bucket is its only cap.
+                        - name: events
+                          match:
+                            safe_regex: { regex: "/api/events(/[^/]+)?" }
+                            headers: [{ name: ":method", string_match: { exact: GET } }]
+                          route:
+                            cluster: ticket
+                            regex_rewrite: { pattern: { regex: "^/api/" }, substitution: / }
+                            timeout: 3s
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_events
+                              token_bucket:
+                                max_tokens: ${LOCAL_EVENTS_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_EVENTS_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # /api/admin/orders/* -> order-api /admin/orders/*
+                        # Above the other admin route, which would otherwise take it. The gateway asks for a
+                        # session, as everywhere under /api; that it is an admin's is checked by the service, which
+                        # answers 403 FORBIDDEN to anyone else.
+                        - name: admin-orders
+                          match:
+                            prefix: /api/admin/orders/
+                          route:
+                            cluster: order-api
+                            prefix_rewrite: /admin/orders/
+                            timeout: 3s
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_admin_orders
+                              token_bucket:
+                                max_tokens: ${LOCAL_ADMIN_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_ADMIN_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # /api/admin/* -> ticket service /admin/*
+                        # The catalogue's admin side: events and the signature for a cover upload.
+                        - name: admin
+                          match:
+                            prefix: /api/admin/
+                          route:
+                            cluster: ticket
+                            prefix_rewrite: /admin/
+                            timeout: 3s
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_admin
+                              token_bucket:
+                                max_tokens: ${LOCAL_ADMIN_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_ADMIN_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # GET /api/queue/:eventId/info -> queue-svc /queue/:eventId/info
+                        # Above join and status. What the event page reads: a session, the local bucket, no global limit.
+                        - name: info
+                          match:
+                            safe_regex: { regex: "/api/queue/[^/]+/info" }
+                            headers: [{ name: ":method", string_match: { exact: GET } }]
+                          route:
+                            cluster: queue-svc
+                            regex_rewrite: { pattern: { regex: "^/api/" }, substitution: / }
+                            timeout: 2s
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_info
+                              token_bucket:
+                                max_tokens: ${LOCAL_INFO_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_INFO_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # POST /api/queue/:eventId/join -> queue-svc /queue/:eventId/join
+                        - name: join
+                          match:
+                            safe_regex: { regex: "/api/queue/[^/]+/join" }
+                            headers: [{ name: ":method", string_match: { exact: POST } }]
+                          route:
+                            cluster: queue-svc
+                            regex_rewrite: { pattern: { regex: "^/api/" }, substitution: / }
+                            timeout: 2s
+                            rate_limits:
+                              - actions:
+                                  - generic_key: { descriptor_value: join }
+                                  - request_headers: { header_name: x-user-id, descriptor_key: user_id }
+                              - actions:
+                                  - generic_key: { descriptor_value: join }
+                                  - remote_address: {}
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_join
+                              token_bucket:
+                                max_tokens: ${LOCAL_JOIN_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_JOIN_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # GET /api/queue/:eventId/status -> queue-svc /queue/:eventId/status
+                        - name: status
+                          match:
+                            safe_regex: { regex: "/api/queue/[^/]+/status" }
+                            headers: [{ name: ":method", string_match: { exact: GET } }]
+                          route:
+                            cluster: queue-svc
+                            regex_rewrite: { pattern: { regex: "^/api/" }, substitution: / }
+                            timeout: 2s
+                            rate_limits:
+                              - actions:
+                                  - generic_key: { descriptor_value: status }
+                                  - request_headers: { header_name: x-user-id, descriptor_key: user_id }
+                              - actions:
+                                  - generic_key: { descriptor_value: status }
+                                  - remote_address: {}
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_status
+                              token_bucket:
+                                max_tokens: ${LOCAL_STATUS_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_STATUS_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # POST /api/reserve -> ticket service /redis/reserve
+                        - name: reserve
+                          # Counters and a latency histogram of its own for this route
+                          # (vhost.api.route.reserve.*): how long the ticket service takes to answer a
+                          # reserve, measured here. The per-cluster numbers would mix in the catalogue.
+                          stat_prefix: reserve
+                          match:
+                            path: /api/reserve
+                            headers: [{ name: ":method", string_match: { exact: POST } }]
+                          route:
+                            cluster: ticket
+                            prefix_rewrite: /redis/reserve
+                            timeout: 1s
+                            rate_limits:
+                              - actions:
+                                  - generic_key: { descriptor_value: reserve }
+                                  - request_headers: { header_name: x-user-id, descriptor_key: user_id }
+                              - actions:
+                                  - generic_key: { descriptor_value: reserve }
+                                  - remote_address: {}
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_reserve
+                              token_bucket:
+                                max_tokens: ${LOCAL_RESERVE_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_RESERVE_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # /api/orders/* -> order-api /orders/*
+                        # No rate limit of either kind.
+                        - name: orders
+                          match:
+                            prefix: /api/orders/
+                          route:
+                            cluster: order-api
+                            prefix_rewrite: /orders/
+                            timeout: 3s
+                        # Anything else under /api is not an API. It is answered here, as JSON, so that it never falls
+                        # through to the web app below. (It still needs a session: the JWT rule covers all of /api.)
+                        - name: api-not-found
+                          match:
+                            prefix: /api/
+                          direct_response:
+                            status: 404
+                            body:
+                              inline_string: '{"code":"NOT_FOUND","message":"no such API route"}'
+                          response_headers_to_add:
+                            - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                              header: { key: content-type, value: application/json }
+                        # Everything that is not /api: the web app. This route must stay LAST. Its pages and /_next assets
+                        # are public: no JWT is asked for (the jwt_authn rules only cover /api) and there is no global
+                        # limit, only the local bucket. Whatever a page shows, the browser fetches from /api itself.
+                        - name: web
+                          match:
+                            prefix: /
+                          route:
+                            cluster: web
+                            timeout: 15s
+                            # `next dev` hot-reloads over a WebSocket.
+                            upgrade_configs:
+                              - upgrade_type: websocket
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_web
+                              token_bucket:
+                                max_tokens: ${LOCAL_WEB_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_WEB_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+
+  clusters:
+    # order-api: the logins, /orders and the admin's order numbers. services/order, PORT 3003.
+    - name: order-api
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: order-api
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: host.docker.internal, port_value: 3003 }
+      health_checks:
+        - timeout: 1s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check: { path: /healthz/ready }
+      outlier_detection:
+        consecutive_5xx: 5
+        base_ejection_time: 30s
+    # The reservation API and the catalogue. services/ticket, PORT 3001.
+    - name: ticket
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: ticket
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: host.docker.internal, port_value: 3001 }
+      health_checks:
+        - timeout: 1s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check: { path: /healthz/ready }
+      outlier_detection:
+        consecutive_5xx: 5
+        base_ejection_time: 30s
+    # The waiting room. services/queue, PORT 4100.
+    - name: queue-svc
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: queue-svc
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: host.docker.internal, port_value: 4100 }
+      health_checks:
+        - timeout: 1s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check: { path: /readyz }
+      outlier_detection:
+        consecutive_5xx: 5
+        base_ejection_time: 30s
+    # The web app (Next.js). web/, port 3012. Its /healthz calls nothing.
+    - name: web
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: web
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: host.docker.internal, port_value: 3012 }
+      health_checks:
+        - timeout: 1s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check: { path: /healthz }
+      outlier_detection:
+        consecutive_5xx: 5
+        base_ejection_time: 30s
+    # The ratelimit service, in compose. gRPC, so HTTP/2.
+    - name: ratelimit
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 1s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: ratelimit
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: ratelimit, port_value: 8081 }
+      health_checks:
+        - timeout: 1s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          grpc_health_check: {}
+      outlier_detection:
+        consecutive_5xx: 5
+        base_ejection_time: 30s

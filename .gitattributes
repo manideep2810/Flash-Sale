@@ -1,0 +1,3 @@
+# Shell scripts run inside Linux containers (infra/envoy/entrypoint.sh) and under bash, where a CRLF
+# line ending is a syntax error. Keep them LF whatever core.autocrlf says.
+*.sh text eol=lf
