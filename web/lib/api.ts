@@ -97,11 +97,13 @@ async function call<T>(
   }
 
   let data: Record<string, unknown> = {};
+  let isJson = true;
   try {
     const text = await res.text();
     data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
   } catch {
-    // Not JSON (a proxy's HTML error page, say): the status is all there is.
+    // Not JSON (an HTML error page, say): the status is all there is.
+    isJson = false;
   }
   if (res.ok) {
     return data as T;
@@ -112,7 +114,11 @@ async function call<T>(
       ? data.code
       : typeof data.error === "string"
         ? data.error
-        : `HTTP_${res.status}`;
+        : res.status === 404 && !isJson
+          ? // Behind the gateway every /api path answers in JSON, a 404 included. A 404 that is a web
+            // page came from the web app itself: the page was opened on its own port, not the gateway's.
+            "NOT_BEHIND_GATEWAY"
+          : `HTTP_${res.status}`;
   const retryAfterSec = Number(res.headers.get("retry-after"));
   const failure = new ApiFailure(
     res.status,

@@ -24,6 +24,9 @@ const ERRORS: Record<string, string> = {
   NOT_FOUND: "That could not be found.",
   INTERNAL: "Something went wrong on our side. Try again.",
   NETWORK: "The server could not be reached. Check your connection and try again.",
+  // The page was loaded from the web app's own port (3012 in development), which serves pages only.
+  NOT_BEHIND_GATEWAY:
+    "There is no API at this address. Open the app through the gateway instead: http://localhost:8080",
 };
 
 /** The sentence for an error code. An unknown code gets a generic one, by its HTTP status. */
