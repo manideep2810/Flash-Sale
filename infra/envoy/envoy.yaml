@@ -8,6 +8,7 @@
 #
 # The services run on the host (`make dev`), not in compose, so the clusters at the bottom point at
 # host.docker.internal. Each service keeps its own paths; the routes rewrite /api/... onto them.
+# Everything that is not /api goes to the web app (web/), which makes its API calls back through here.
 #
 # What a request passes through, in order:
 #   1. local rate limit   one token bucket per route for this Envoy: overload protection, whoever asks
@@ -218,6 +219,31 @@ static_resources:
                               response_headers_to_add:
                                 - append_action: OVERWRITE_IF_EXISTS_OR_ADD
                                   header: { key: retry-after, value: "1" }
+                        # GET /api/queue/:eventId/info -> queue-svc /queue/:eventId/info
+                        # Above join and status. What the event page reads: a session, the local bucket, no global limit.
+                        - name: info
+                          match:
+                            safe_regex: { regex: "/api/queue/[^/]+/info" }
+                            headers: [{ name: ":method", string_match: { exact: GET } }]
+                          route:
+                            cluster: queue-svc
+                            regex_rewrite: { pattern: { regex: "^/api/" }, substitution: / }
+                            timeout: 2s
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_info
+                              token_bucket:
+                                max_tokens: ${LOCAL_INFO_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_INFO_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
                         # POST /api/queue/:eventId/join -> queue-svc /queue/:eventId/join
                         - name: join
                           match:
@@ -320,10 +346,45 @@ static_resources:
                             cluster: order-api
                             prefix_rewrite: /orders/
                             timeout: 3s
-                        # The web app arrives with the Next.js pages (item 5):
-                        # - name: web
-                        #   match: { prefix: / }
-                        #   route: { cluster: web }
+                        # Anything else under /api is not an API. It is answered here, as JSON, so that it never falls
+                        # through to the web app below. (It still needs a session: the JWT rule covers all of /api.)
+                        - name: api-not-found
+                          match:
+                            prefix: /api/
+                          direct_response:
+                            status: 404
+                            body:
+                              inline_string: '{"code":"NOT_FOUND","message":"no such API route"}'
+                          response_headers_to_add:
+                            - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                              header: { key: content-type, value: application/json }
+                        # Everything that is not /api: the web app. This route must stay LAST. Its pages and /_next assets
+                        # are public: no JWT is asked for (the jwt_authn rules only cover /api) and there is no global
+                        # limit, only the local bucket. Whatever a page shows, the browser fetches from /api itself.
+                        - name: web
+                          match:
+                            prefix: /
+                          route:
+                            cluster: web
+                            timeout: 15s
+                            # `next dev` hot-reloads over a WebSocket.
+                            upgrade_configs:
+                              - upgrade_type: websocket
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_web
+                              token_bucket:
+                                max_tokens: ${LOCAL_WEB_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_WEB_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
 
   clusters:
     # order-api: the login and /orders. services/order, PORT 3003.
@@ -386,6 +447,27 @@ static_resources:
           unhealthy_threshold: 2
           healthy_threshold: 1
           http_health_check: { path: /readyz }
+      outlier_detection:
+        consecutive_5xx: 5
+        base_ejection_time: 30s
+    # The web app (Next.js). web/, port 3012. Its /healthz calls nothing.
+    - name: web
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: web
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: host.docker.internal, port_value: 3012 }
+      health_checks:
+        - timeout: 1s
+          interval: 5s
+          unhealthy_threshold: 2
+          healthy_threshold: 1
+          http_health_check: { path: /healthz }
       outlier_detection:
         consecutive_5xx: 5
         base_ejection_time: 30s

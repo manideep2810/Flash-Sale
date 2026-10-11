@@ -21,7 +21,7 @@
     {
       "id": 1,
       "title": "Requests per route",
-      "description": "Every request the gateway answered, per second, by the route it matched. Counted from Envoy's access log, so requests Envoy refused itself (401, 429) are included, not only the ones a service saw. Requests that matched no route are not shown.",
+      "description": "Every request the gateway answered, per second, by the route it matched. Counted from Envoy's access log, so requests Envoy refused itself (401, 429) are included, not only the ones a service saw. web is everything that is not /api: pages and their assets.",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -116,6 +116,36 @@
                 "value": {
                   "mode": "fixed",
                   "fixedColor": "#d55181"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "info"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#008300"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "web"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#9085e9"
                 }
               }
             ]
@@ -244,6 +274,36 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "info"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#008300"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "web"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#9085e9"
+                }
+              }
+            ]
           }
         ]
       },
@@ -366,6 +426,36 @@
                 "value": {
                   "mode": "fixed",
                   "fixedColor": "#d55181"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "info"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#008300"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "web"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#9085e9"
                 }
               }
             ]
@@ -494,6 +584,36 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "info"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#008300"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "web"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#9085e9"
+                }
+              }
+            ]
           }
         ]
       },
@@ -521,7 +641,7 @@
     {
       "id": 5,
       "title": "Upstream latency per cluster (p95)",
-      "description": "95th percentile of the time a cluster took to answer Envoy, in milliseconds. order-api, ticket and queue-svc are the services on the host; ratelimit is the rate-limit service, which Envoy stops waiting for after 50 ms.",
+      "description": "95th percentile of the time a cluster took to answer Envoy, in milliseconds. order-api, ticket and queue-svc are the services on the host; ratelimit is the rate-limit service, which Envoy stops waiting for after 50 ms; web is the Next.js app.",
       "type": "timeseries",
       "datasource": {
         "type": "prometheus",
@@ -586,6 +706,21 @@
                 "value": {
                   "mode": "fixed",
                   "fixedColor": "#e66767"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "web"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3987e5"
                 }
               }
             ]
