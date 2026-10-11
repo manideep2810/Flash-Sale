@@ -15,14 +15,22 @@
 //
 // What must hold, and is checked:
 //   1. no reserve got a 2xx
-//   2. every reserve got 401, 403 or 429
+//   2. every reserve that was answered got 401, 403 or 429
 //   3. the four scenarios with no usable admission token never reached the ticket service; the only
 //      reserves it saw were the "somebody else's token" ones, which it refused
 //   4. Redis holds exactly what it held before: no hold, no stock moved, nothing on the stream
 //   5. the join flood was cut off: 429s, and no more joins let through than the per-address limit
 //      allows for the minutes the run touched
+//   6. the flood was delivered: k6 got an answer to (all but a thousandth of) what it sent. When it
+//      did not, the run proves nothing about the gateway, whatever the other five say. The usual
+//      cause is this machine running out of outgoing ports: see the note on bodies in
+//      loadtest/bot-flood.js, and --withBody below.
 //
-// Exits 0 when all five hold, 1 otherwise.
+// --withBody sends the real reserve body on the four scenarios the gateway refuses. The gateway
+// then closes the connection after each refusal, so every one costs a new outgoing port; before
+// such a run this prints how long the machine's ports will last.
+//
+// Exits 0 when all six hold, 1 otherwise.
 
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
@@ -47,6 +55,7 @@ const { values: flags } = parseArgs({
     ticketMetrics: { type: "string", default: "http://localhost:9464/metrics" },
     redisUrl: { type: "string", default: process.env.REDIS_URL ?? "redis://localhost:6380" },
     anyProfile: { type: "boolean", default: false },
+    withBody: { type: "boolean", default: false },
   },
 });
 
@@ -161,6 +170,7 @@ function runK6(): Promise<number> {
         OUT: `loadtest/results/phase5/${EVENT_ID}.json`,
         SESSION_SECRET: TEST_SESSION_SECRET,
         ADMISSION_SECRET: TEST_ADMISSION_SECRET,
+        ...(flags.withBody ? { WITH_BODY: "1" } : {}),
       },
     });
     k6.on("error", (error) => reject(new Error(`could not start k6: ${error.message}`)));
@@ -172,6 +182,47 @@ interface Check {
   pass: boolean;
   name: string;
   detail: string;
+}
+
+/** The share of requests that may go unanswered (a dropped connection) in a run that still counts. */
+const UNSENT_TOLERANCE = 0.001;
+/** Each scenario's share of the total rate, as in loadtest/bot-flood.js. */
+const GATEWAY_REFUSED_SHARE = 0.78;
+const STOLEN_TOKEN_SHARE = 0.02;
+
+/** How many outgoing ports this machine hands out, where that can be asked (Windows). */
+function outgoingPorts(): number | null {
+  if (process.platform !== "win32") {
+    return null;
+  }
+  const shown = spawnSync("netsh", ["int", "ipv4", "show", "dynamicport", "tcp"], {
+    encoding: "utf8",
+  });
+  const ports = /Number of Ports\s*:\s*(\d+)/.exec(shown.stdout ?? "");
+  return ports ? Number(ports[1]) : null;
+}
+
+/**
+ * The gateway closes the connection after refusing a request whose body it has not read, so each
+ * such refusal uses up one outgoing port for a couple of minutes. Says so before a run that will
+ * use more of them than the machine has.
+ */
+function warnAboutPorts(): void {
+  const ports = outgoingPorts();
+  if (ports === null) {
+    return;
+  }
+  const withBodyPerSec =
+    TOTAL_RATE * (STOLEN_TOKEN_SHARE + (flags.withBody ? GATEWAY_REFUSED_SHARE : 0));
+  const needed = Math.round(withBodyPerSec * DURATION_SEC);
+  if (needed > ports * 0.8) {
+    console.log(
+      `WARNING: up to ${needed} of these requests carry a body, and each one the gateway refuses ` +
+        `costs a new connection. This machine has ${ports} outgoing ports, which is about ` +
+        `${Math.floor(ports / withBodyPerSec)}s of this run. Expect "no answer" after that` +
+        `${flags.withBody ? ": drop --withBody, or shorten the run" : ": shorten the run or lower the rate"}.`,
+    );
+  }
 }
 
 async function main(): Promise<boolean> {
@@ -204,6 +255,7 @@ async function main(): Promise<boolean> {
         `${profile === null ? "unknown (docker inspect failed)" : profile === "config" ? "normal" : profile}.`,
     );
 
+    warnAboutPorts();
     const before = await snapshot(redis);
     const startedAt = Date.now();
     const k6Exit = await runK6();
@@ -231,6 +283,13 @@ async function main(): Promise<boolean> {
       (labels) => labels.route === "reserve" && String(labels.code).startsWith("2"),
     );
     const reserveOther = sumOf(RESERVE_SCENARIOS, "other");
+    const allScenarios = Object.keys(k6.answers);
+    const unsent = sumOf(allScenarios, "unsent");
+    const attempted = allScenarios.reduce(
+      (sum, scenario) =>
+        sum + Object.values(k6.answers[scenario] ?? {}).reduce((each, n) => each + n, 0),
+      0,
+    );
     const forwarded = gatewayDelta(
       (labels) => labels.route === "reserve" && labels.reason === "via_upstream",
     );
@@ -263,10 +322,10 @@ async function main(): Promise<boolean> {
       },
       {
         pass: reserveOther === 0,
-        name: "Every reserve got 401, 403 or 429",
+        name: "Every answered reserve got 401, 403 or 429",
         detail:
           `401 ${sumOf(RESERVE_SCENARIOS, "401")}, 403 ${sumOf(RESERVE_SCENARIOS, "403")}, ` +
-          `429 ${sumOf(RESERVE_SCENARIOS, "429")}, anything else ${reserveOther} (expected 0)`,
+          `429 ${sumOf(RESERVE_SCENARIOS, "429")}, any other answer ${reserveOther} (expected 0)`,
       },
       {
         pass: tokenless === 0 && accepted === 0 && forwarded === mismatched,
@@ -295,6 +354,18 @@ async function main(): Promise<boolean> {
           `${failedOpen > 0 ? `; ${failedOpen} requests were let through unchecked because the rate-limit service did not answer in 50 ms (it fails open)` : ""}`,
       },
     ];
+
+    checks.push({
+      pass: unsent <= attempted * UNSENT_TOLERANCE,
+      name: "The flood was delivered",
+      detail:
+        `${unsent} of ${attempted} requests got no answer at all (allowed: 1 in 1,000)` +
+        (unsent > attempted * UNSENT_TOLERANCE
+          ? ". k6 could not send them, so this run shows less than it claims. If the lines above " +
+            'say "Only one usage of each socket address", this machine ran out of outgoing ' +
+            "ports: run without --withBody, or shorter, or slower"
+          : ""),
+    });
 
     const width = Math.max(...checks.map((check) => check.name.length));
     console.log(`BOT FLOOD VERDICT  ${EVENT_ID}`);

@@ -21,11 +21,22 @@
 // The sixth is real traffic as far as any one request goes; the per-address and local limits are
 // what cut it off.
 //
+// About request bodies. The gateway refuses the first four on their headers alone, and when it
+// refuses a request whose body it has not read yet it also closes the connection ("connection:
+// close"). Every such refusal then costs the client a new TCP connection, and one machine has only
+// so many outgoing ports (16,384 on Windows by default): at a few hundred refusals a second the
+// flood stops being a flood after twenty seconds, because k6 can no longer connect. So by default
+// those four are sent WITHOUT a body. The gateway's answer is the same and the connection is kept,
+// which is what lets the flood be delivered at any rate. WITH_BODY=1 sends the real reserve body on
+// them too: closer to a real bot, and only deliverable in short, slow runs. The fifth always carries
+// the body, because the ticket service reads the event from it; that is why its share is small.
+//
 // Env:
 //   GATEWAY      default http://localhost:8080
 //   EVENT_ID     the event to aim at (default bot-flood)
 //   TOTAL_RATE   requests a second, all scenarios together (default 10000)
 //   DURATION     default 60s
+//   WITH_BODY    1 to send the reserve body on the four gateway-refused scenarios (see above)
 //   OUT          where the numbers go as JSON (default loadtest/results/phase5/bot-flood.json)
 //   SESSION_SECRET, ADMISSION_SECRET   must match the services (see loadtest/lib/tokens.js)
 
@@ -37,6 +48,7 @@ const GATEWAY = __ENV.GATEWAY || "http://localhost:8080";
 const EVENT_ID = __ENV.EVENT_ID || "bot-flood";
 const TOTAL_RATE = Number(__ENV.TOTAL_RATE || 10000);
 const DURATION = __ENV.DURATION || "60s";
+const WITH_BODY = __ENV.WITH_BODY === "1";
 const OUT = __ENV.OUT || "loadtest/results/phase5/bot-flood.json";
 
 /** Each scenario's share of TOTAL_RATE, and the function it runs. */
@@ -44,12 +56,14 @@ const SCENARIOS = {
   no_token: { share: 0.2, exec: "noToken" },
   session_only: { share: 0.2, exec: "sessionOnly" },
   forged_admission: { share: 0.2, exec: "forgedAdmission" },
-  expired_admission: { share: 0.15, exec: "expiredAdmission" },
-  other_users_admission: { share: 0.05, exec: "otherUsersAdmission" },
+  expired_admission: { share: 0.18, exec: "expiredAdmission" },
+  // Always sent with a body, so each one the gateway refuses costs a connection: kept small.
+  other_users_admission: { share: 0.02, exec: "otherUsersAdmission" },
   join_flood: { share: 0.2, exec: "joinFlood" },
 };
 const RESERVE_SCENARIOS = Object.keys(SCENARIOS).filter((name) => name !== "join_flood");
-const CLASSES = ["2xx", "401", "403", "429", "other"];
+/** "unsent": k6 got no HTTP answer at all (it could not connect, or the connection dropped). */
+const CLASSES = ["2xx", "401", "403", "429", "other", "unsent"];
 
 // None of these answers is a failed request as far as k6 is concerned: they are what is being counted.
 http.setResponseCallback(http.expectedStatuses({ min: 200, max: 299 }, 401, 403, 429));
@@ -65,11 +79,13 @@ for (const scenario of Object.keys(SCENARIOS)) {
 
 function tally(scenario, status) {
   const kind =
-    status >= 200 && status < 300
-      ? "2xx"
-      : status === 401 || status === 403 || status === 429
-        ? String(status)
-        : "other";
+    status === 0
+      ? "unsent"
+      : status >= 200 && status < 300
+        ? "2xx"
+        : status === 401 || status === 403 || status === 429
+          ? String(status)
+          : "other";
   // Every counter gets a sample every time, so that one that stays at zero still exists to be read.
   for (const each of CLASSES) {
     counters[scenario][each].add(each === kind ? 1 : 0);
@@ -107,20 +123,24 @@ const userId = () => `bot-${__VU}-${__ITER}-${Date.now() % 1000000}`;
 
 const RESERVE_BODY = JSON.stringify({ eventId: EVENT_ID, qty: 1 });
 
-function reserve(scenario, headers) {
-  const res = http.post(`${GATEWAY}/api/reserve`, RESERVE_BODY, {
-    headers: Object.assign({ "Content-Type": "application/json" }, headers),
+function reserve(scenario, headers, body) {
+  const res = http.post(`${GATEWAY}/api/reserve`, body, {
+    headers:
+      body === null ? headers : Object.assign({ "Content-Type": "application/json" }, headers),
     tags: { name: scenario },
   });
   tally(scenario, res.status);
 }
 
+/** The body of a reserve the gateway refuses on its headers: none, unless WITH_BODY asks for it. */
+const refusedBody = WITH_BODY ? RESERVE_BODY : null;
+
 export function noToken() {
-  reserve("no_token", {});
+  reserve("no_token", {}, refusedBody);
 }
 
 export function sessionOnly() {
-  reserve("session_only", { Authorization: bearer(userId()) });
+  reserve("session_only", { Authorization: bearer(userId()) }, refusedBody);
 }
 
 export function forgedAdmission() {
@@ -131,25 +151,37 @@ export function forgedAdmission() {
     { sub: user, eid: EVENT_ID, aud: "reserve", iss: "queue-svc", iat: now, exp: now + 120 },
     "not-the-admission-secret-0123456789abcdefghijklmn",
   );
-  reserve("forged_admission", { Authorization: bearer(user), [ADMISSION_HEADER]: forged });
+  reserve(
+    "forged_admission",
+    { Authorization: bearer(user), [ADMISSION_HEADER]: forged },
+    refusedBody,
+  );
 }
 
 export function expiredAdmission() {
   const user = userId();
-  reserve("expired_admission", {
-    Authorization: bearer(user),
-    // Signed with the real secret; its turn ended a minute ago.
-    [ADMISSION_HEADER]: mintAdmissionToken(user, EVENT_ID, -60),
-  });
+  reserve(
+    "expired_admission",
+    {
+      Authorization: bearer(user),
+      // Signed with the real secret; its turn ended a minute ago.
+      [ADMISSION_HEADER]: mintAdmissionToken(user, EVENT_ID, -60),
+    },
+    refusedBody,
+  );
 }
 
 export function otherUsersAdmission() {
   const user = userId();
-  reserve("other_users_admission", {
-    Authorization: bearer(user),
-    // A real, current admission token, for somebody else.
-    [ADMISSION_HEADER]: mintAdmissionToken(`victim-of-${user}`, EVENT_ID),
-  });
+  reserve(
+    "other_users_admission",
+    {
+      Authorization: bearer(user),
+      // A real, current admission token for this event, issued to somebody else.
+      [ADMISSION_HEADER]: mintAdmissionToken(`victim-of-${user}`, EVENT_ID),
+    },
+    RESERVE_BODY,
+  );
 }
 
 export function joinFlood() {
@@ -172,6 +204,7 @@ export function handleSummary(data) {
     eventId: EVENT_ID,
     totalRate: TOTAL_RATE,
     duration: DURATION,
+    withBody: WITH_BODY,
     requests: count("http_reqs"),
     requestsPerSecond: Math.round(data.metrics.http_reqs?.values?.rate ?? 0),
     droppedIterations: count("dropped_iterations"),
@@ -185,14 +218,15 @@ export function handleSummary(data) {
 
   const pad = (text, width) => String(text).padEnd(width);
   const num = (n) => String(n).padStart(9);
+  const heading = { unsent: "no answer" };
   const lines = [
     "",
     `BOT FLOOD  ${EVENT_ID}  ${result.requests} requests in ${DURATION} ` +
-      `(${result.requestsPerSecond}/s; asked for ${TOTAL_RATE}/s, ${result.droppedIterations} not sent)`,
-    `  ${pad("scenario", 24)}${CLASSES.map((kind) => kind.padStart(9)).join("")}`,
+      `(${result.requestsPerSecond}/s; asked for ${TOTAL_RATE}/s, ${result.droppedIterations} not started)`,
+    `  ${pad("scenario", 24)}${CLASSES.map((kind) => (heading[kind] || kind).padStart(11)).join("")}`,
     ...Object.keys(SCENARIOS).map(
       (scenario) =>
-        `  ${pad(scenario, 24)}${CLASSES.map((kind) => num(answers[scenario][kind])).join("")}`,
+        `  ${pad(scenario, 24)}${CLASSES.map((kind) => `  ${num(answers[scenario][kind])}`).join("")}`,
     ),
     `  latency: median ${result.latencyMs.med.toFixed(1)} ms, p99 ${result.latencyMs.p99.toFixed(1)} ms`,
     "",
