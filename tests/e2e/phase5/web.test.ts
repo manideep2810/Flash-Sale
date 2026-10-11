@@ -15,7 +15,7 @@ import { randomUUID } from "node:crypto";
 import { type Browser, type BrowserContext, chromium, type Page } from "playwright";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { bearer } from "../../../tools/tokens.js";
-import { Harness } from "../phase4/support.js";
+import { ADMIN_PASSWORD, Harness } from "../phase4/support.js";
 import {
   buildWeb,
   call,
@@ -404,4 +404,57 @@ describe("the web app, in a browser", () => {
     await page.getByRole("link", { name: "Join queue" }).waitFor();
     expect(sent).toEqual([JSON.stringify({ userId: user("visitor") })]);
   }, 90_000);
+
+  it("9. lets the admin in with the password, create an event, and see it on sale", async () => {
+    const page = await newPage();
+
+    // The dashboard is the admin's: anyone else lands on the admin login.
+    await page.goto(`${GATEWAY}/admin`);
+    await page.waitForURL("**/admin/login");
+    await page.locator('input[name="adminPassword"]').fill("not the password");
+    await page.getByRole("button", { name: "Log in as admin" }).click();
+    await page.getByText("That password is not right.").waitFor();
+
+    await page.locator('input[name="adminPassword"]').fill(ADMIN_PASSWORD);
+    await page.getByRole("button", { name: "Log in as admin" }).click();
+    await page.waitForURL("**/admin");
+    await page.getByRole("heading", { name: "Sales dashboard" }).waitFor();
+
+    // A new event, on sale now.
+    const name = `Admin made ${runId}`;
+    const eventId = `admin-made-${runId}`;
+    sales.push(eventId);
+    await page.getByRole("link", { name: "New event" }).click();
+    await page.locator('input[name="name"]').fill(name);
+    // The id follows the name until it is typed over.
+    expect(await page.locator('input[name="id"]').inputValue()).toBe(eventId);
+    await page.locator('textarea[name="description"]').fill("Created by the browser test.");
+    await page.locator('input[name="price"]').fill("750.50");
+    await page.locator('input[name="totalStock"]').fill("25");
+    await page.getByRole("button", { name: "On sale now" }).click();
+    await page.getByRole("button", { name: "Create event" }).click();
+
+    // Back on the dashboard, with its row: nothing sold, nothing held, all 25 left.
+    await page.waitForURL("**/admin");
+    const row = page.getByTestId(`admin-event-${eventId}`);
+    await row.waitFor();
+    await row.getByText("₹750.50").waitFor();
+    await row.getByText("0 sold · 0 held · 25 left").waitFor();
+    expect(await h.inventory(eventId)).toMatchObject({ avail: 25 });
+
+    // And on the front page, for everyone. (A customer in a browser of their own.)
+    const visitor = await newPage();
+    await visitor.goto(GATEWAY);
+    const card = visitor.getByTestId("event-card").filter({ hasText: name });
+    await card.waitFor();
+    await card.getByText("₹750.50").waitFor();
+
+    // Edit it: the new price shows on the dashboard.
+    await row.getByRole("link", { name: "Edit" }).click();
+    await page.getByRole("heading", { name: `Edit ${name}` }).waitFor();
+    await page.locator('input[name="price"]').fill("800");
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await page.waitForURL("**/admin");
+    await page.getByTestId(`admin-event-${eventId}`).getByText("₹800.00").waitFor();
+  }, 120_000);
 });
