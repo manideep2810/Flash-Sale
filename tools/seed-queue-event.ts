@@ -7,12 +7,14 @@
 //   EVENT_NAME="Launch day" EVENT_PRICE=4999 pnpm -C tools run seed-queue-event
 //
 // Writes the event's config hash, lists it in queue:events (the set the admitter iterates) and
-// deletes its queue, admitted and state keys, in one MULTI.
+// deletes its queue, admitted and state keys, in one MULTI (seedWaitingRoom in load/lib/seed.ts,
+// which the load tools use too).
 //
 // It does NOT seed stock. That belongs to Phase 2 (the ticket service's ev:<eventId>:avail key), and
 // the admitter leaves an event alone until it exists; when it is missing this prints how to seed it.
 
 import { Redis } from "ioredis";
+import { keysOf, seedWaitingRoom } from "./load/lib/seed.js";
 
 const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6380";
 const TICKET_URL = process.env.TICKET_URL ?? "http://localhost:3001";
@@ -37,14 +39,7 @@ const ADMIT_TTL_SEC = numberFromEnv("ADMIT_TTL_SEC", 120, 1);
 const EVENT_NAME = process.env.EVENT_NAME || "Demo event";
 const EVENT_PRICE = numberFromEnv("EVENT_PRICE", 4999, 0);
 
-// Must match services/queue/src/redis/keys.ts, and availKey must match reserveKeys() in
-// services/ticket/src/redis/index.ts.
-const QUEUE_EVENTS = "queue:events";
-const configKey = (e: string) => `ev:${e}:config`;
-const queueKey = (e: string) => `ev:${e}:queue`;
-const admittedKey = (e: string) => `ev:${e}:admitted`;
-const stateKey = (e: string) => `ev:${e}:state`;
-const availKey = (e: string) => `ev:${e}:avail`;
+const availKey = (eventId: string) => keysOf(eventId).avail;
 
 async function main(): Promise<void> {
   const redis = new Redis(REDIS_URL, { maxRetriesPerRequest: 3 });
@@ -56,27 +51,15 @@ async function main(): Promise<void> {
     const lobbyOpensAt = now + Math.round(LOBBY_OPENS_IN_SEC * 1000);
     const saleOpensAt = now + Math.round(SALE_OPENS_IN_SEC * 1000);
 
-    const replies = await redis
-      .multi()
-      .del(queueKey(EVENT_ID), admittedKey(EVENT_ID), stateKey(EVENT_ID))
-      .hset(configKey(EVENT_ID), {
-        lobbyOpensAt: String(lobbyOpensAt),
-        saleOpensAt: String(saleOpensAt),
-        admitRatePerSec: String(ADMIT_RATE),
-        admitTtlSec: String(Math.round(ADMIT_TTL_SEC)),
-        name: EVENT_NAME,
-        price: String(Math.round(EVENT_PRICE)),
-      })
-      .sadd(QUEUE_EVENTS, EVENT_ID)
-      .exec();
-    if (!replies) {
-      throw new Error("seed transaction was aborted");
-    }
-    for (const [error] of replies) {
-      if (error) {
-        throw error;
-      }
-    }
+    await seedWaitingRoom(redis, {
+      eventId: EVENT_ID,
+      lobbyOpensAt,
+      saleOpensAt,
+      admitRatePerSec: ADMIT_RATE,
+      admitTtlSec: ADMIT_TTL_SEC,
+      name: EVENT_NAME,
+      price: EVENT_PRICE,
+    });
 
     console.log(`event        ${EVENT_ID}  ("${EVENT_NAME}", price ${Math.round(EVENT_PRICE)})`);
     console.log(`lobby opens  ${new Date(lobbyOpensAt).toISOString()}`);
