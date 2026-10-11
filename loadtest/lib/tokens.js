@@ -28,7 +28,8 @@ export const ADMISSION_HEADER = "X-Admission-Token";
 const b64url = (text) => encoding.b64encode(text, "rawurl");
 const JWT_HEADER = b64url(JSON.stringify({ alg: "HS256", typ: "JWT" }));
 
-function sign(claims, secret) {
+/** Signs any claims with any secret: also for the tokens no real login would issue (bot-flood.js). */
+export function sign(claims, secret) {
   const body = b64url(JSON.stringify(claims));
   const signature = crypto.hmac("sha256", secret, `${JWT_HEADER}.${body}`, "base64rawurl");
   return `${JWT_HEADER}.${body}.${signature}`;
