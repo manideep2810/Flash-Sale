@@ -6,9 +6,22 @@ const ERRORS: Record<string, string> = {
   UNAUTHENTICATED: "You are not logged in. Log in to continue.",
   SESSION_EXPIRED: "Your session ended. Log in again.",
   RATE_LIMITED: "You are going too fast. Wait a moment and try again.",
+  // Logging in
+  INVALID_CREDENTIALS: "That password is not right.",
+  ADMIN_LOGIN_OFF: "The admin login is switched off on this server.",
+  FORBIDDEN: "This needs an admin login.",
+  // The catalogue
+  EVENT_NOT_FOUND: "There is no such event.",
+  CATALOGUE_UNAVAILABLE: "The events could not be loaded just now. Try again in a moment.",
+  EVENT_EXISTS: "An event with that id already exists. Choose another id.",
+  SYNC_FAILED: "Saved, but the live sale could not be updated. Save again in a moment.",
+  UPLOADS_NOT_CONFIGURED:
+    "Image uploads are not set up on this server. Paste an image URL instead.",
+  UPLOAD_BAD_TYPE: "That file is not an image we can use. Choose a JPEG, PNG, WebP or AVIF.",
+  UPLOAD_TOO_LARGE: "That image is too large. Choose one under 5 MB.",
+  UPLOAD_FAILED: "The image could not be uploaded. Try again.",
   // The waiting room
   NOT_OPEN: "The lobby is not open yet.",
-  EVENT_NOT_FOUND: "There is no such event.",
   QUEUE_UNAVAILABLE: "The waiting room is temporarily unavailable. Keep this page open.",
   // Reserving
   SOLD_OUT: "Sold out.",
@@ -19,6 +32,7 @@ const ERRORS: Record<string, string> = {
   // Paying
   HOLD_EXPIRED: "Your hold expired.",
   NOT_PAYABLE: "This order can no longer be paid.",
+  PRICE_UNAVAILABLE: "The payment could not be started just now. Nothing was charged: try again.",
   // Anything
   BAD_REQUEST: "That request was not valid.",
   NOT_FOUND: "That could not be found.",

@@ -1,6 +1,6 @@
 // The one module that talks to the backend. Every call is made by the browser against a relative
 // /api/... URL on the page's own origin (the gateway), with the session token attached. Nothing here
-// runs on the server.
+// runs on the server. (One exception, uploadCover(): the image itself goes straight to Cloudinary.)
 
 import { sentenceFor } from "./messages";
 
@@ -56,6 +56,21 @@ export function configureApi(hooks: {
   onSessionRejected = hooks.onSessionRejected;
 }
 
+// ---- the server's clock ----------------------------------------------------------------------------
+
+/** How far this browser's clock is behind the server's, in ms, as of the last answer that said. */
+let clockSkewMs = 0;
+
+/**
+ * The time by the server's clock. Every instant the pages count down to is the server's (a sale
+ * opening, a turn or a hold ending), so they are compared with this and not with Date.now(): a
+ * browser whose clock is a minute off still shows the right time left. It equals Date.now() until
+ * an answer has carried the server's time.
+ */
+export function serverNow(): number {
+  return Date.now() + clockSkewMs;
+}
+
 interface CallOptions {
   body?: unknown;
   /** The admission token, for reserve. */
@@ -68,7 +83,7 @@ interface CallOptions {
 }
 
 async function call<T>(
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PUT",
   path: string,
   options: CallOptions = {},
 ): Promise<T> {
@@ -106,6 +121,10 @@ async function call<T>(
     isJson = false;
   }
   if (res.ok) {
+    // The catalogue's answers say what time the server makes it.
+    if (typeof data.now === "number") {
+      clockSkewMs = data.now - Date.now();
+    }
     return data as T;
   }
 
@@ -132,7 +151,7 @@ async function call<T>(
   throw failure;
 }
 
-// ---- the endpoints -------------------------------------------------------------------------------
+// ---- logging in ------------------------------------------------------------------------------------
 
 export interface Session {
   token: string;
@@ -140,28 +159,53 @@ export interface Session {
   expiresAt: string;
 }
 
-/** POST /api/auth/dev-login. Dev only: no password. */
+/**
+ * POST /api/auth/dev-login. Dev only: the backend takes a user id and no password. The login screen
+ * has a password field because a login screen has one; what is typed there is never sent.
+ */
 export function devLogin(userId: string): Promise<Session> {
   return call("POST", "/api/auth/dev-login", { body: { userId } });
 }
 
-export interface EventInfo {
-  eventId: string;
-  name: string;
-  /** In the smallest currency unit, or null when the event has none. Display only. */
-  price: number | null;
-  /** Epoch ms. */
-  lobbyOpensAt: number;
-  /** Epoch ms. */
-  saleOpensAt: number;
-  admitRatePerSec: number;
-  state: "OPEN" | "PAUSED" | "SOLD_OUT";
+/** POST /api/auth/admin-login: the one fixed admin password. */
+export function adminLogin(password: string): Promise<Session & { role: string }> {
+  return call("POST", "/api/auth/admin-login", { body: { password } });
 }
 
-/** GET /api/queue/:eventId/info */
-export function getEventInfo(eventId: string): Promise<EventInfo> {
-  return call("GET", `/api/queue/${encodeURIComponent(eventId)}/info`);
+// ---- the catalogue ----------------------------------------------------------------------------------
+
+/** Where an event is in its life, as the server saw it when it answered. */
+export type EventStatus = "UPCOMING" | "LOBBY" | "LIVE" | "SOLD_OUT";
+
+export interface CatalogueEvent {
+  id: string;
+  name: string;
+  description: string;
+  /** Per ticket, in the smallest currency unit. */
+  price: number;
+  imageUrl: string | null;
+  /** Epoch ms, by the server's clock: from here people can join the waiting room. */
+  lobbyOpensAt: number;
+  /** Epoch ms, by the server's clock: from here the waiting room lets people in to buy. */
+  saleOpensAt: number;
+  totalStock: number;
+  /** Tickets nobody holds or has bought. Null when the live numbers could not be read. */
+  available: number | null;
+  status: EventStatus;
 }
+
+/** GET /api/events. Public: no session needed. */
+export async function listEvents(): Promise<CatalogueEvent[]> {
+  return (await call<{ events: CatalogueEvent[] }>("GET", "/api/events")).events;
+}
+
+/** GET /api/events/:eventId. Public. 404 EVENT_NOT_FOUND. */
+export async function getEvent(eventId: string): Promise<CatalogueEvent> {
+  const path = `/api/events/${encodeURIComponent(eventId)}`;
+  return (await call<{ event: CatalogueEvent }>("GET", path)).event;
+}
+
+// ---- the waiting room ------------------------------------------------------------------------------
 
 export interface Queued {
   status: "QUEUED";
@@ -203,6 +247,8 @@ export function getQueueStatus(eventId: string): Promise<StatusReply> {
   return call("GET", `/api/queue/${encodeURIComponent(eventId)}/status`);
 }
 
+// ---- reserving and paying --------------------------------------------------------------------------
+
 /**
  * POST /api/reserve. There is no way to call this without an admission token: the parameter is
  * required and an empty one is refused here, before any request is made.
@@ -224,6 +270,10 @@ export function reserve(
 
 export interface Order {
   id: string;
+  eventId: string;
+  qty: number;
+  /** What was charged, in the smallest currency unit. Null until payment has been asked for. */
+  amount: number | null;
   state: string;
   /** ISO time the hold ends. */
   expiresAt: string;
@@ -249,3 +299,113 @@ export const SETTLED_STATES = [
   "RELEASED",
   "REFUNDED",
 ];
+
+// ---- the admin page ---------------------------------------------------------------------------------
+
+/** An event with the numbers behind it. They are null when Redis could not be read. */
+export interface AdminEvent extends CatalogueEvent {
+  /** Tickets in someone's checkout, not yet paid for. */
+  held: number | null;
+  sold: number | null;
+  /** People waiting in line, and people whose turn it is now. */
+  queued: number | null;
+  admitted: number | null;
+  queueState: "OPEN" | "PAUSED" | "SOLD_OUT" | null;
+  admitRatePerSec: number;
+  admitTtlSec: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** GET /api/admin/events. `live` is false when the numbers from Redis are missing. */
+export function adminListEvents(): Promise<{ live: boolean; events: AdminEvent[] }> {
+  return call("GET", "/api/admin/events");
+}
+
+/** What the event form sends. Instants are epoch ms. */
+export interface EventInput {
+  /** Create only, and optional there: left out, the id is made from the name. */
+  id?: string;
+  name: string;
+  description: string;
+  price: number;
+  /** Create only: an event's stock is set once. */
+  totalStock?: number;
+  imageUrl: string | null;
+  lobbyOpensAt: number;
+  saleOpensAt: number;
+  admitRatePerSec: number;
+  admitTtlSec: number;
+}
+
+/** POST /api/admin/events. 409 EVENT_EXISTS, 400 BAD_REQUEST with `issues` by field. */
+export async function adminCreateEvent(input: EventInput): Promise<AdminEvent> {
+  return (await call<{ event: AdminEvent }>("POST", "/api/admin/events", { body: input })).event;
+}
+
+/** PUT /api/admin/events/:eventId. Anything but the id and the stock. */
+export async function adminUpdateEvent(
+  eventId: string,
+  changes: Omit<EventInput, "id" | "totalStock">,
+): Promise<AdminEvent> {
+  const path = `/api/admin/events/${encodeURIComponent(eventId)}`;
+  return (await call<{ event: AdminEvent }>("PUT", path, { body: changes })).event;
+}
+
+/** One row per event and order state. */
+export interface OrderMetricsRow {
+  eventId: string;
+  state: string;
+  orders: number;
+  /** Tickets those orders are for. */
+  units: number;
+  /** What they were charged in total, in the smallest currency unit. */
+  amount: number;
+}
+
+/** GET /api/admin/orders/metrics */
+export async function adminOrderMetrics(): Promise<OrderMetricsRow[]> {
+  return (await call<{ rows: OrderMetricsRow[] }>("GET", "/api/admin/orders/metrics")).rows;
+}
+
+/** What Cloudinary needs for one upload, signed by the ticket service. */
+interface UploadTicket {
+  uploadUrl: string;
+  fields: Record<string, string>;
+}
+
+export const COVER_TYPES = ["image/jpeg", "image/png", "image/webp", "image/avif"];
+export const COVER_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Uploads a cover image and returns its URL. Two steps: POST /api/admin/uploads/sign gets a signature
+ * (the API secret stays in the ticket service), then the browser posts the file to Cloudinary itself,
+ * so the image never passes through our services. 503 UPLOADS_NOT_CONFIGURED when Cloudinary is not
+ * set up: the form then takes a pasted URL.
+ */
+export async function uploadCover(file: File): Promise<string> {
+  if (!COVER_TYPES.includes(file.type)) {
+    throw new ApiFailure(400, "UPLOAD_BAD_TYPE");
+  }
+  if (file.size > COVER_MAX_BYTES) {
+    throw new ApiFailure(400, "UPLOAD_TOO_LARGE");
+  }
+  const ticket = await call<UploadTicket>("POST", "/api/admin/uploads/sign");
+
+  const form = new FormData();
+  for (const [name, value] of Object.entries(ticket.fields)) {
+    form.append(name, value);
+  }
+  form.append("file", file);
+  let uploaded: { secure_url?: unknown };
+  try {
+    const res = await fetch(ticket.uploadUrl, { method: "POST", body: form });
+    uploaded = (await res.json()) as { secure_url?: unknown };
+  } catch {
+    throw new ApiFailure(0, "UPLOAD_FAILED");
+  }
+  if (typeof uploaded.secure_url !== "string") {
+    throw new ApiFailure(502, "UPLOAD_FAILED");
+  }
+  return uploaded.secure_url;
+}

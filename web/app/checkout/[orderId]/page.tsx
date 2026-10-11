@@ -2,10 +2,22 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Countdown } from "@/components/Countdown";
-import { getOrder, type Order, payOrder, SETTLED_STATES, toFailure } from "@/lib/api";
-import { formatTime, segment } from "@/lib/format";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { CountdownTimer } from "@/components/Countdown";
+import { EventCover } from "@/components/EventCover";
+import { CardIcon, ClockIcon, LockIcon } from "@/components/Icons";
+import { SignInPrompt } from "@/components/SignInPrompt";
+import {
+  type CatalogueEvent,
+  getEvent,
+  getOrder,
+  type Order,
+  payOrder,
+  SETTLED_STATES,
+  serverNow,
+  toFailure,
+} from "@/lib/api";
+import { formatPrice, formatTime, segment } from "@/lib/format";
 import { paymentFailedKey } from "@/lib/messages";
 import { useSession } from "@/lib/session";
 
@@ -26,7 +38,63 @@ type Step =
   | "expired"
   | "slow"; // still undecided after the wait
 
-/** The hold: a countdown to the server's expiry time, and the Pay button. */
+// ---- the card form -----------------------------------------------------------------------------------
+//
+// It looks like a card form and checks what is typed like one, and that is all it does: THE CARD
+// DETAILS NEVER LEAVE THIS COMPONENT. They are not sent to our backend or anywhere else; the payment
+// is made by a mock service that knows nothing but the order. The form comes filled in with a test
+// card so that paying is one click, and the page says that it is a demo.
+
+interface Card {
+  number: string;
+  name: string;
+  expiry: string;
+  cvc: string;
+}
+
+type CardProblems = Partial<Record<keyof Card, string>>;
+
+const digitsOf = (value: string) => value.replace(/\D/g, "");
+
+/** "4242424242424242" -> "4242 4242 4242 4242". */
+const formatCardNumber = (value: string) =>
+  digitsOf(value)
+    .slice(0, 19)
+    .replace(/(.{4})(?=.)/g, "$1 ");
+
+/** "1230" -> "12/30". */
+function formatExpiry(value: string): string {
+  const digits = digitsOf(value).slice(0, 4);
+  return digits.length > 2 ? `${digits.slice(0, 2)}/${digits.slice(2)}` : digits;
+}
+
+function problemsOf(card: Card): CardProblems {
+  const problems: CardProblems = {};
+  const number = digitsOf(card.number);
+  if (number.length < 12) {
+    problems.number = "Enter the full card number.";
+  }
+  if (card.name.trim() === "") {
+    problems.name = "Enter the name on the card.";
+  }
+  const [month, year] = card.expiry.split("/").map(Number);
+  if (!month || year === undefined || month > 12 || card.expiry.length !== 5) {
+    problems.expiry = "Enter the expiry as MM/YY.";
+  } else {
+    // A card is good through the last day of its month.
+    const now = new Date(serverNow());
+    const thisMonth = (now.getFullYear() % 100) * 12 + now.getMonth() + 1;
+    if (year * 12 + month < thisMonth) {
+      problems.expiry = "This card has expired.";
+    }
+  }
+  if (!/^\d{3,4}$/.test(card.cvc)) {
+    problems.cvc = "3 or 4 digits.";
+  }
+  return problems;
+}
+
+/** The hold: the order's summary, a countdown to the server's expiry time, and the way to pay. */
 export default function CheckoutPage() {
   const orderId = segment(useParams().orderId);
   const router = useRouter();
@@ -38,6 +106,20 @@ export default function CheckoutPage() {
   const [problem, setProblem] = useState<string | null>(null);
   const alive = useRef(true);
 
+  const [card, setCard] = useState<Card>({
+    number: "4242 4242 4242 4242",
+    name: "",
+    expiry: "12/30",
+    cvc: "123",
+  });
+  const [cardProblems, setCardProblems] = useState<CardProblems>({});
+  // The name on the test card is whoever is paying, until they type another.
+  useEffect(() => {
+    if (session) {
+      setCard((current) => (current.name === "" ? { ...current, name: session.userId } : current));
+    }
+  }, [session]);
+
   const resultPath = `/orders/${encodeURIComponent(orderId)}`;
 
   useEffect(() => {
@@ -46,6 +128,23 @@ export default function CheckoutPage() {
       alive.current = false;
     };
   }, []);
+
+  // What the order is for. Display only; an order of an event with no catalogue entry still pays.
+  const [event, setEvent] = useState<CatalogueEvent | null>(null);
+  const eventId = order?.eventId;
+  useEffect(() => {
+    if (!eventId) {
+      return;
+    }
+    let current = true;
+    getEvent(eventId).then(
+      (loaded) => current && setEvent(loaded),
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [eventId]);
 
   /** Notes a failed payment for the result page, and reports whether the order is settled. */
   const settled = useCallback(
@@ -155,8 +254,15 @@ export default function CheckoutPage() {
     }
   }, [step, follow]);
 
-  async function pay() {
+  async function pay(submitted: FormEvent) {
+    submitted.preventDefault();
     if (busy) {
+      return;
+    }
+    // Checked like a real form, and then left where it is: none of it is sent.
+    const found = problemsOf(card);
+    setCardProblems(found);
+    if (Object.keys(found).length > 0) {
       return;
     }
     setBusy(true);
@@ -214,41 +320,211 @@ export default function CheckoutPage() {
     return null;
   }
   if (!session) {
-    return <p>Log in above to see your order.</p>;
+    return <SignInPrompt what="to see your order" />;
   }
 
+  // What will be charged: the order's own amount once payment has been asked for, and until then
+  // the event's price for the tickets held (which is how the order service works it out).
+  const total = order?.amount ?? (order && event ? event.price * order.qty : null);
+  const canPay = step === "holding" || step === "confirming";
+  const edit = (field: keyof Card, value: string) => {
+    setCard((current) => ({ ...current, [field]: value }));
+    setCardProblems((current) => ({ ...current, [field]: undefined }));
+  };
+
   return (
-    <>
+    <section className="checkout">
       <h1>Checkout</h1>
-      {order && (step === "holding" || step === "confirming") ? (
-        <p className="big">
-          Your item is held until {formatTime(order.expiresAt)} (
-          <Countdown to={order.expiresAt} onDone={onHoldOver} done="time is up" />)
-        </p>
-      ) : null}
 
-      {step === "confirming" ? <p>Confirming your reservation…</p> : null}
-      {step === "processing" ? <p className="big">Processing payment…</p> : null}
-      {step === "expired" ? <p className="big">Your hold expired</p> : null}
-      {step === "slow" ? (
-        <p>
-          This is taking longer than usual. <Link href={resultPath}>See your order</Link>
-        </p>
-      ) : null}
+      <div className="checkout__grid">
+        <div className="checkout__pay">
+          {order && canPay ? (
+            <div className="hold-banner">
+              <ClockIcon size={18} />
+              <p>
+                Your item is held until {formatTime(order.expiresAt)}
+                <span className="visually-hidden">: </span>
+              </p>
+              <strong className="hold-banner__clock">
+                <CountdownTimer to={order.expiresAt} onDone={onHoldOver} done="time is up" />
+              </strong>
+            </div>
+          ) : null}
 
-      {step === "holding" || step === "confirming" ? (
-        <p>
-          <button type="button" onClick={pay} disabled={busy || !order}>
-            {busy ? "Paying…" : "Pay"}
-          </button>
-        </p>
-      ) : null}
-      {problem ? <p role="alert">{problem}</p> : null}
-      {step === "expired" ? (
-        <p>
-          <Link href={resultPath}>See your order</Link>
-        </p>
-      ) : null}
-    </>
+          {step === "processing" ? (
+            <div className="panel panel--center panel--flat">
+              <span className="spinner" aria-hidden="true" />
+              <p className="big">Processing payment…</p>
+              <p className="muted">Do not close this page. This usually takes a few seconds.</p>
+            </div>
+          ) : null}
+          {step === "expired" ? (
+            <div className="panel panel--center panel--flat">
+              <p className="big">Your hold expired</p>
+              <p className="muted">The tickets went back on sale.</p>
+              <Link className="btn btn--ghost" href={resultPath}>
+                See your order
+              </Link>
+            </div>
+          ) : null}
+          {step === "slow" ? (
+            <div className="panel panel--center panel--flat">
+              <p className="big">This is taking longer than usual.</p>
+              <Link className="btn btn--ghost" href={resultPath}>
+                See your order
+              </Link>
+            </div>
+          ) : null}
+
+          {canPay ? (
+            <form className="pay-form" onSubmit={pay} noValidate>
+              <div className="pay-form__head">
+                <h2>
+                  <CardIcon size={20} /> Pay by card
+                </h2>
+                <span className="pill">Demo</span>
+              </div>
+              <p className="pay-form__note">
+                <LockIcon size={16} />
+                This is a demo checkout. A test card is filled in, nothing you type here leaves your
+                browser, and no card is charged.
+              </p>
+
+              <label className="field">
+                <span className="field__label">Card number</span>
+                <input
+                  name="cardNumber"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="1234 5678 9012 3456"
+                  value={card.number}
+                  onChange={(change) => edit("number", formatCardNumber(change.target.value))}
+                  aria-invalid={cardProblems.number !== undefined}
+                />
+                {cardProblems.number ? (
+                  <span className="field__error">{cardProblems.number}</span>
+                ) : null}
+              </label>
+
+              <label className="field">
+                <span className="field__label">Name on card</span>
+                <input
+                  name="cardName"
+                  autoComplete="off"
+                  placeholder="A. Cardholder"
+                  value={card.name}
+                  onChange={(change) => edit("name", change.target.value)}
+                  aria-invalid={cardProblems.name !== undefined}
+                />
+                {cardProblems.name ? (
+                  <span className="field__error">{cardProblems.name}</span>
+                ) : null}
+              </label>
+
+              <div className="field-row">
+                <label className="field">
+                  <span className="field__label">Expiry</span>
+                  <input
+                    name="cardExpiry"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    placeholder="MM/YY"
+                    value={card.expiry}
+                    onChange={(change) => edit("expiry", formatExpiry(change.target.value))}
+                    aria-invalid={cardProblems.expiry !== undefined}
+                  />
+                  {cardProblems.expiry ? (
+                    <span className="field__error">{cardProblems.expiry}</span>
+                  ) : null}
+                </label>
+                <label className="field">
+                  <span className="field__label">Security code</span>
+                  <input
+                    name="cardCvc"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    placeholder="CVC"
+                    value={card.cvc}
+                    onChange={(change) => edit("cvc", digitsOf(change.target.value).slice(0, 4))}
+                    aria-invalid={cardProblems.cvc !== undefined}
+                  />
+                  {cardProblems.cvc ? (
+                    <span className="field__error">{cardProblems.cvc}</span>
+                  ) : null}
+                </label>
+              </div>
+
+              {step === "confirming" ? (
+                <p className="muted pay-form__status">
+                  <span className="spinner spinner--small" aria-hidden="true" /> Confirming your
+                  reservation…
+                </p>
+              ) : null}
+              {problem ? (
+                <p className="alert" role="alert">
+                  {problem}
+                </p>
+              ) : null}
+
+              <button
+                type="submit"
+                className="btn btn--primary btn--block btn--large"
+                disabled={busy || !order}
+              >
+                <LockIcon size={18} />
+                {busy ? "Paying…" : total === null ? "Pay" : `Pay ${formatPrice(total)}`}
+              </button>
+            </form>
+          ) : problem ? (
+            <p className="alert" role="alert">
+              {problem}
+            </p>
+          ) : null}
+        </div>
+
+        <aside className="summary" aria-label="Order summary">
+          <h2>Order summary</h2>
+          {order ? (
+            <>
+              <div className="summary__event">
+                {event ? <EventCover event={event} className="cover--thumb" eager /> : null}
+                <div>
+                  <p className="summary__name">{event?.name ?? order.eventId}</p>
+                  <p className="muted">
+                    {order.qty} {order.qty === 1 ? "ticket" : "tickets"}
+                  </p>
+                </div>
+              </div>
+              <dl className="summary__lines">
+                {event ? (
+                  <div>
+                    <dt>
+                      {order.qty} × {formatPrice(event.price)}
+                    </dt>
+                    <dd>{formatPrice(event.price * order.qty)}</dd>
+                  </div>
+                ) : null}
+                <div>
+                  <dt>Booking fee</dt>
+                  <dd>Free</dd>
+                </div>
+                <div className="summary__total">
+                  <dt>Total</dt>
+                  <dd data-testid="total">{total === null ? "—" : formatPrice(total)}</dd>
+                </div>
+              </dl>
+              <p className="summary__ref">
+                Order <code>{order.id}</code>
+              </p>
+            </>
+          ) : (
+            <p className="muted">
+              <span className="spinner spinner--small" aria-hidden="true" /> Finding your
+              reservation…
+            </p>
+          )}
+        </aside>
+      </div>
+    </section>
   );
 }

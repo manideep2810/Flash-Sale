@@ -3,10 +3,13 @@
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
-import { Countdown } from "@/components/Countdown";
+import { CountdownTimer } from "@/components/Countdown";
+import { EventCover } from "@/components/EventCover";
+import { ArrowLeftIcon, MinusIcon, PlusIcon, ShieldIcon } from "@/components/Icons";
+import { SignInPrompt } from "@/components/SignInPrompt";
 import { type Turn, useAdmission } from "@/lib/admission";
-import { getQueueStatus, reserve, toFailure } from "@/lib/api";
-import { formatTime, segment } from "@/lib/format";
+import { type CatalogueEvent, getEvent, getQueueStatus, reserve, toFailure } from "@/lib/api";
+import { formatPrice, formatTime, segment } from "@/lib/format";
 import { useSession } from "@/lib/session";
 
 /** There is no per-user limit in the backend to read; the selector simply stops here. */
@@ -28,7 +31,21 @@ export default function BuyPage() {
   const [soldOut, setSoldOut] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
 
-  const queuePath = `/events/${encodeURIComponent(eventId)}/queue`;
+  const eventPath = `/events/${encodeURIComponent(eventId)}`;
+  const queuePath = `${eventPath}/queue`;
+
+  // What is being bought, and for how much. Display only: reserving needs the id and nothing else.
+  const [event, setEvent] = useState<CatalogueEvent | null>(null);
+  useEffect(() => {
+    let current = true;
+    getEvent(eventId).then(
+      (loaded) => current && setEvent(loaded),
+      () => {},
+    );
+    return () => {
+      current = false;
+    };
+  }, [eventId]);
 
   /**
    * Asks the server whether it is still this user's turn. ADMITTED returns the token again (it is
@@ -45,7 +62,7 @@ export default function BuyPage() {
       admission.clear(eventId);
       return "over";
     } catch {
-      // A lost session has already brought the login bar back; anything else is not an answer.
+      // A lost session has already brought the login prompt back; anything else is not an answer.
       return "unknown";
     }
   }, [admission, eventId]);
@@ -121,7 +138,7 @@ export default function BuyPage() {
           if (failure.status === 401 && failure.code !== "TOKEN_INVALID") {
             // UNAUTHENTICATED (the gateway), TOKEN_EXPIRED or ADMISSION_REQUIRED (the service).
             // Through the gateway an expired turn and an expired session look the same, so ask:
-            // a status call fails too if it was the session, and the login bar takes over.
+            // a status call fails too if it was the session, and the login prompt takes over.
             const now = await checkTurn();
             if (now === "over") {
               turnOver();
@@ -147,59 +164,110 @@ export default function BuyPage() {
     return null;
   }
   if (!session) {
-    return <p>Log in above to continue.</p>;
+    return <SignInPrompt what="to continue" />;
   }
   if (soldOut) {
     return (
-      <>
-        <p className="big">Sold out.</p>
-        <p>
-          <Link href={`/events/${encodeURIComponent(eventId)}`}>Back to the event</Link>
-        </p>
-      </>
+      <section className="panel panel--center">
+        <h1 className="panel__title">Sold out.</h1>
+        <p className="muted">The last tickets were taken a moment before you reserved.</p>
+        <Link className="back-link" href={eventPath}>
+          <ArrowLeftIcon size={16} /> Back to the event
+        </Link>
+      </section>
     );
   }
 
   return (
-    <>
-      <h1>It's your turn</h1>
+    <section className="buy">
+      <h1 className="visually-hidden">It's your turn</h1>
       {turn ? (
         <>
-          <p className="big">
-            It's your turn — you have until {formatTime(turn.expiresAt)} (
-            <Countdown to={turn.expiresAt} onDone={onCountdownDone} done="time is up" />)
-          </p>
-          <p>
-            <label>
-              Quantity{" "}
-              <select
-                value={qty}
-                onChange={(event) => setQty(Number(event.target.value))}
-                disabled={busy}
-              >
-                {Array.from({ length: MAX_QTY }, (_, i) => i + 1).map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-            </label>{" "}
-            <button type="button" onClick={submit} disabled={busy}>
-              {busy ? "Reserving…" : "Reserve"}
+          <div className="turn-banner">
+            <div>
+              <p className="eyebrow">You're in</p>
+              <p className="turn-banner__text">
+                It's your turn — you have until {formatTime(turn.expiresAt)}
+              </p>
+            </div>
+            <p className="turn-banner__clock">
+              <CountdownTimer to={turn.expiresAt} onDone={onCountdownDone} done="time is up" />
+            </p>
+          </div>
+
+          <div className="buy__card">
+            <div className="buy__event">
+              {event ? <EventCover event={event} className="cover--thumb" eager /> : null}
+              <div>
+                <p className="buy__name">{event?.name ?? "Your tickets"}</p>
+                {event ? <p className="muted">{formatPrice(event.price)} per ticket</p> : null}
+              </div>
+            </div>
+
+            <div className="buy__row">
+              <span id="qty-label" className="field__label">
+                Tickets
+              </span>
+              <fieldset className="stepper" aria-labelledby="qty-label">
+                <button
+                  type="button"
+                  aria-label="One ticket fewer"
+                  onClick={() => setQty((value) => Math.max(1, value - 1))}
+                  disabled={busy || qty <= 1}
+                >
+                  <MinusIcon size={18} />
+                </button>
+                <output className="stepper__value" aria-live="polite" data-testid="qty">
+                  {qty}
+                </output>
+                <button
+                  type="button"
+                  aria-label="One ticket more"
+                  onClick={() => setQty((value) => Math.min(MAX_QTY, value + 1))}
+                  disabled={busy || qty >= MAX_QTY}
+                >
+                  <PlusIcon size={18} />
+                </button>
+              </fieldset>
+            </div>
+
+            {event ? (
+              <div className="buy__row buy__row--total">
+                <span>Total</span>
+                <strong data-testid="total">{formatPrice(event.price * qty)}</strong>
+              </div>
+            ) : null}
+
+            <button
+              type="button"
+              className="btn btn--primary btn--block btn--large"
+              onClick={submit}
+              disabled={busy}
+            >
+              {busy ? "Reserving…" : qty === 1 ? "Reserve 1 ticket" : `Reserve ${qty} tickets`}
             </button>
-          </p>
+            <p className="buy__small">
+              <ShieldIcon size={16} /> Reserving holds your tickets while you pay. Nothing is
+              charged yet.
+            </p>
+          </div>
         </>
       ) : problem ? null : (
-        <p>Checking your turn…</p>
+        <div className="panel panel--center">
+          <span className="spinner" aria-hidden="true" />
+          <p className="muted">Checking your turn…</p>
+        </div>
       )}
       {problem ? (
-        <>
-          <p role="alert">{problem}</p>
-          <p>
-            <Link href={queuePath}>Back to the queue</Link>
+        <div className="panel panel--center">
+          <p className="alert" role="alert">
+            {problem}
           </p>
-        </>
+          <Link className="back-link" href={queuePath}>
+            <ArrowLeftIcon size={16} /> Back to the queue
+          </Link>
+        </div>
       ) : null}
-    </>
+    </section>
   );
 }

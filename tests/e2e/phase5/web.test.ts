@@ -8,25 +8,27 @@
 // already running, with its normal limits: the app's own pace stays inside them. Needs the local
 // stack up (`make up`) and a Chromium for Playwright (`pnpm -C tests/e2e exec playwright install chromium`).
 //
-// Each test seeds a sale of its own: open now, admitting 50 a second, with whatever stock, turn length
-// and users the case needs.
+// Each test puts an event of its own in the catalogue, the way the admin page does: open now,
+// admitting 50 a second, with whatever stock, turn length and users the case needs.
 
 import { randomUUID } from "node:crypto";
 import { type Browser, type BrowserContext, chromium, type Page } from "playwright";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { bearer } from "../../../tools/tokens.js";
 import { Harness } from "../phase4/support.js";
 import {
   buildWeb,
   call,
   clustersHealthy,
   compose,
+  createEvent,
+  type EventOptions,
   forgetSale,
   GATEWAY,
   GATEWAY_CONTAINERS,
-  openWaitingRoom,
+  ORDER_API,
   queueProcs,
   TICKET,
-  type WaitingRoomOptions,
   waitFor,
   webProc,
 } from "./support.js";
@@ -42,16 +44,22 @@ describe("the web app, in a browser", () => {
   /** A user id nobody has used. A prefix of "ok-" or "fail-" decides the mock payment's answer. */
   const user = (name: string) => `${name}-${runId}`;
 
-  /** A sale with an open waiting room. Stock null seeds none: the admitter then admits nobody. */
-  async function seedSale(stock: number | null, room: WaitingRoomOptions = {}): Promise<string> {
-    let eventId: string;
+  /**
+   * An event on sale, created through the admin API: 19.99 a ticket, open a minute ago. Stock null
+   * leaves it with no stock key in Redis, which is what makes the admitter admit nobody.
+   */
+  async function seedSale(
+    stock: number | null,
+    options: Partial<EventOptions> = {},
+  ): Promise<string> {
+    const eventId = `e2e-web-${randomUUID().slice(0, 8)}`;
+    await createEvent({ id: eventId, totalStock: stock ?? 1, ...options });
     if (stock === null) {
-      eventId = `e2e-web-${randomUUID().slice(0, 8)}`;
-    } else {
-      eventId = await h.createSale(stock, "web");
+      await h.redis.del(`ev:${eventId}:avail`);
     }
-    await openWaitingRoom(h.redis, eventId, { name: "Test event", price: 1_999, ...room });
     sales.push(eventId);
+    // For the harness's own clean-up and invariant checks, like a sale it created itself.
+    h.events.push(eventId);
     return eventId;
   }
 
@@ -64,18 +72,23 @@ describe("the web app, in a browser", () => {
     return page;
   }
 
-  /** Opens the event page and logs in through the bar. */
+  const loggedInAs = (page: Page) => page.getByTestId("user").innerText();
+
+  /** Logs in on the login screen, which then goes on to the event page. */
   async function openEvent(page: Page, eventId: string, userId: string): Promise<void> {
-    await page.goto(`${GATEWAY}/events/${eventId}`);
-    await page.locator('input[name="userId"]').fill(userId);
+    await page.goto(`${GATEWAY}/login?next=${encodeURIComponent(`/events/${eventId}`)}`);
+    await page.locator('input[name="username"]').fill(userId);
+    await page.locator('input[name="password"]').fill("any password at all");
     await page.getByRole("button", { name: "Log in" }).click();
-    await page.getByText(`Logged in as ${userId}`).waitFor();
+    await page.waitForURL(`**/events/${eventId}`);
+    await page.getByTestId("user").waitFor();
+    expect(await loggedInAs(page)).toBe(userId);
   }
 
-  /** From the event page to the buy page: join, wait in the room, be admitted. */
+  /** From the login screen to the buy page: join, wait in the room, be admitted. */
   async function reachBuyPage(page: Page, eventId: string, userId: string): Promise<void> {
     await openEvent(page, eventId, userId);
-    await page.getByRole("button", { name: "Join queue" }).click();
+    await page.getByRole("link", { name: "Join queue" }).click();
     await page.waitForURL(`**/events/${eventId}/buy`);
     await page.getByRole("button", { name: "Reserve" }).waitFor();
   }
@@ -84,9 +97,9 @@ describe("the web app, in a browser", () => {
 
   beforeAll(async () => {
     await buildWeb();
-    // The gateway as `make up` runs it. Restarted, so that it has read the envoy.yaml on disk.
-    await compose(["up", "-d", "--wait", ...GATEWAY_CONTAINERS]);
-    await compose(["restart", "envoy"]);
+    // The gateway as `make up` runs it. Recreated, so that it has read the envoy.yaml and the limits
+    // on disk.
+    await compose(["up", "-d", "--wait", "--force-recreate", ...GATEWAY_CONTAINERS]);
     await compose(["exec", "-T", "redis-ratelimit", "redis-cli", "flushall"]);
     try {
       await h.startAll();
@@ -123,29 +136,42 @@ describe("the web app, in a browser", () => {
     await h.stopAll();
   }, 240_000);
 
-  it("1. takes a user from login to a confirmed order", async () => {
+  it("1. takes a user from login to a confirmed order, charged the price times the quantity", async () => {
     const eventId = await seedSale(5);
     const page = await newPage();
-    await openEvent(page, eventId, user("ok-happy"));
+    const userId = user("ok-happy");
+    await openEvent(page, eventId, userId);
 
-    // The event page shows what /info says.
+    // The event page shows what the catalogue says.
     await page.getByRole("heading", { name: "Test event" }).waitFor();
-    await page.getByText("19.99").waitFor();
+    await page.getByText("₹19.99").first().waitFor();
     await page.getByText("The sale is open").waitFor();
 
-    await page.getByRole("button", { name: "Join queue" }).click();
+    await page.getByRole("link", { name: "Join queue" }).click();
     await page.waitForURL(`**/events/${eventId}/buy`);
     await page.getByText("It's your turn — you have until").waitFor();
     expect(await page.title()).toBe("It's your turn!");
 
-    await page.getByRole("button", { name: "Reserve" }).click();
+    // Two tickets: the total follows.
+    await page.getByRole("button", { name: "One ticket more" }).click();
+    expect(await page.getByTestId("total").innerText()).toBe("₹39.98");
+    await page.getByRole("button", { name: "Reserve 2 tickets" }).click();
     await page.waitForURL("**/checkout/**");
     await page.getByText("Your item is held until").waitFor();
+    await page.getByText("This is a demo checkout.").waitFor();
 
-    await page.getByRole("button", { name: "Pay" }).click();
+    await page.getByRole("button", { name: "Pay ₹39.98" }).click();
     await page.getByText("Order confirmed").waitFor({ timeout: 60_000 });
     expect(page.url()).toContain("/orders/");
+    await page.getByText("₹39.98").first().waitFor();
     await page.getByRole("link", { name: "Back to the event" }).waitFor();
+
+    // And that is what the order was charged, by the order service's own account.
+    const orderId = decodeURIComponent(page.url().split("/orders/")[1] ?? "");
+    const order = await call("GET", `${ORDER_API}/orders/${encodeURIComponent(orderId)}`, {
+      authorization: await bearer(userId),
+    });
+    expect(order.body).toMatchObject({ eventId, qty: 2, amount: 3_998 });
   }, 120_000);
 
   it("2. keeps the same place in line across a refresh", async () => {
@@ -159,7 +185,7 @@ describe("the web app, in a browser", () => {
     const userId = user("refresh");
     const page = await newPage();
     await openEvent(page, eventId, userId);
-    await page.getByRole("button", { name: "Join queue" }).click();
+    await page.getByRole("link", { name: "Join queue" }).click();
     await page.waitForURL(`**/events/${eventId}/queue`);
 
     await page.getByTestId("position").waitFor();
@@ -174,7 +200,7 @@ describe("the web app, in a browser", () => {
     expect(await h.redis.zcard(queue)).toBe(6);
     expect(await h.redis.zscore(queue, userId)).toBe(joinedAt);
     // And the session survived the refresh too.
-    await page.getByText(`Logged in as ${userId}`).waitFor();
+    expect(await loggedInAs(page)).toBe(userId);
   }, 60_000);
 
   it("3. is still the user's turn after a refresh of the buy page, and reserve works", async () => {
@@ -199,7 +225,10 @@ describe("the web app, in a browser", () => {
   }, 90_000);
 
   it("4. says the turn expired when it is not used, and Rejoin goes to the back", async () => {
-    const eventId = await seedSale(5, { admitTtlSec: 2 });
+    const eventId = await seedSale(5);
+    // A two-second turn. The admin API would not allow one this short (its least is ten), so it is
+    // written straight into the waiting room's config, before anyone has read it.
+    await h.redis.hset(`ev:${eventId}:config`, "admitTtlSec", "2");
     const userId = user("slow");
     const page = await newPage();
     await reachBuyPage(page, eventId, userId);
@@ -274,7 +303,7 @@ describe("the web app, in a browser", () => {
     });
 
     await openEvent(page, eventId, user("ok-spy"));
-    await page.getByRole("button", { name: "Join queue" }).click();
+    await page.getByRole("link", { name: "Join queue" }).click();
     await page.getByTestId("position").waitFor();
 
     // Three answers of "still queued", at the server's pace (about two seconds apart).
@@ -335,4 +364,44 @@ describe("the web app, in a browser", () => {
       return (await h.inventory(eventId)).avail === 5;
     });
   }, 120_000);
+
+  it("8. lists the events to a visitor who has not logged in, and asks for a login only to join", async () => {
+    const name = `Open air ${runId}`;
+    const eventId = await seedSale(40, { name, price: 125_000 });
+    const page = await newPage();
+    await page.goto(GATEWAY);
+
+    // The front page: the event's card, with its price and that it is on sale. No login yet.
+    const card = page.getByTestId("event-card").filter({ hasText: name });
+    await card.waitFor();
+    await card.getByText("₹1,250.00").waitFor();
+    await card.getByText("Live now").waitFor();
+    await page.getByRole("link", { name: "Log in", exact: true }).waitFor();
+
+    // The card leads to the event, which is public too; joining is what needs a login.
+    await card.click();
+    await page.waitForURL(`**/events/${eventId}`);
+    await page.getByRole("heading", { name }).waitFor();
+    await page.getByRole("link", { name: "Log in to join the queue" }).click();
+    await page.waitForURL("**/login**");
+
+    // The login screen refuses an empty password like any other, and then never sends the one typed.
+    const sent: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/api/auth/")) {
+        sent.push(request.postData() ?? "");
+      }
+    });
+    await page.locator('input[name="username"]').fill(user("visitor"));
+    await page.getByRole("button", { name: "Log in" }).click();
+    await page.getByText("Enter a password.").waitFor();
+    expect(sent).toEqual([]);
+    await page.locator('input[name="password"]').fill("correct horse battery staple");
+    await page.getByRole("button", { name: "Log in" }).click();
+
+    // Back on the event, logged in, with the way into the queue.
+    await page.waitForURL(`**/events/${eventId}`);
+    await page.getByRole("link", { name: "Join queue" }).waitFor();
+    expect(sent).toEqual([JSON.stringify({ userId: user("visitor") })]);
+  }, 90_000);
 });
