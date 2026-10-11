@@ -10,6 +10,10 @@ descriptors:
       # Out of reach: the login test is about the local bucket (limits.test.env).
       - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 100000 } }
   - key: generic_key
+    value: admin-login
+    descriptors:
+      - { key: remote_address, rate_limit: { unit: minute, requests_per_unit: 4 } }
+  - key: generic_key
     value: join
     descriptors:
       - { key: user_id, rate_limit: { unit: minute, requests_per_unit: 3 } }

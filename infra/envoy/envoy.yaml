@@ -12,8 +12,9 @@
 #
 # What a request passes through, in order:
 #   1. local rate limit   one token bucket per route for this Envoy: overload protection, whoever asks
-#   2. jwt_authn          the session on every /api route but the login, plus the admission token on
-#                         reserve. A request that fails here never reaches a service.
+#   2. jwt_authn          the session on every /api route but the two logins and the public event
+#                         listing, plus the admission token on reserve. A request that fails here
+#                         never reaches a service.
 #   3. global rate limit  per user and per client address, counted by the ratelimit service
 #                         (infra/ratelimit/config/flashsale.yaml). Fails open.
 #   4. router
@@ -156,6 +157,10 @@ static_resources:
                       rules:
                         # The first rule that matches decides.
                         - match: { path: /api/auth/dev-login }
+                        - match: { path: /api/auth/admin-login }
+                        # The catalogue is public. (Its admin side is under /api/admin and needs a session.)
+                        - match: { path: /api/events }
+                        - match: { prefix: /api/events/ }
                         - match: { path: /api/reserve }
                           requires:
                             requires_all:
@@ -211,6 +216,112 @@ static_resources:
                               token_bucket:
                                 max_tokens: ${LOCAL_LOGIN_MAX_TOKENS}
                                 tokens_per_fill: ${LOCAL_LOGIN_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # POST /api/auth/admin-login -> order-api /auth/admin-login
+                        # One fixed password stands behind this, so the limit per client address is small: it is
+                        # what keeps a guesser to a handful of tries a minute.
+                        - name: admin-login
+                          match:
+                            path: /api/auth/admin-login
+                            headers: [{ name: ":method", string_match: { exact: POST } }]
+                          route:
+                            cluster: order-api
+                            prefix_rewrite: /auth/admin-login
+                            timeout: 2s
+                            rate_limits:
+                              - actions:
+                                  - generic_key: { descriptor_value: admin-login }
+                                  - remote_address: {}
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_admin_login
+                              token_bucket:
+                                max_tokens: ${LOCAL_ADMIN_LOGIN_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_ADMIN_LOGIN_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # GET /api/events, GET /api/events/:eventId -> ticket service /events, /events/:eventId
+                        # The catalogue. Public: the listing is what a visitor sees before logging in. The local
+                        # bucket is its only cap.
+                        - name: events
+                          match:
+                            safe_regex: { regex: "/api/events(/[^/]+)?" }
+                            headers: [{ name: ":method", string_match: { exact: GET } }]
+                          route:
+                            cluster: ticket
+                            regex_rewrite: { pattern: { regex: "^/api/" }, substitution: / }
+                            timeout: 3s
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_events
+                              token_bucket:
+                                max_tokens: ${LOCAL_EVENTS_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_EVENTS_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # /api/admin/orders/* -> order-api /admin/orders/*
+                        # Above the other admin route, which would otherwise take it. The gateway asks for a
+                        # session, as everywhere under /api; that it is an admin's is checked by the service, which
+                        # answers 403 FORBIDDEN to anyone else.
+                        - name: admin-orders
+                          match:
+                            prefix: /api/admin/orders/
+                          route:
+                            cluster: order-api
+                            prefix_rewrite: /admin/orders/
+                            timeout: 3s
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_admin_orders
+                              token_bucket:
+                                max_tokens: ${LOCAL_ADMIN_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_ADMIN_TOKENS_PER_FILL}
+                                fill_interval: ${LOCAL_FILL_INTERVAL}
+                              filter_enabled:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              filter_enforced:
+                                default_value: { numerator: 100, denominator: HUNDRED }
+                              response_headers_to_add:
+                                - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                                  header: { key: retry-after, value: "1" }
+                        # /api/admin/* -> ticket service /admin/*
+                        # The catalogue's admin side: events and the signature for a cover upload.
+                        - name: admin
+                          match:
+                            prefix: /api/admin/
+                          route:
+                            cluster: ticket
+                            prefix_rewrite: /admin/
+                            timeout: 3s
+                          typed_per_filter_config:
+                            envoy.filters.http.local_ratelimit:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                              stat_prefix: local_admin
+                              token_bucket:
+                                max_tokens: ${LOCAL_ADMIN_MAX_TOKENS}
+                                tokens_per_fill: ${LOCAL_ADMIN_TOKENS_PER_FILL}
                                 fill_interval: ${LOCAL_FILL_INTERVAL}
                               filter_enabled:
                                 default_value: { numerator: 100, denominator: HUNDRED }
@@ -387,7 +498,7 @@ static_resources:
                                   header: { key: retry-after, value: "1" }
 
   clusters:
-    # order-api: the login and /orders. services/order, PORT 3003.
+    # order-api: the logins, /orders and the admin's order numbers. services/order, PORT 3003.
     - name: order-api
       type: STRICT_DNS
       dns_lookup_family: V4_ONLY
@@ -408,7 +519,7 @@ static_resources:
       outlier_detection:
         consecutive_5xx: 5
         base_ejection_time: 30s
-    # The reservation API. services/ticket, PORT 3001.
+    # The reservation API and the catalogue. services/ticket, PORT 3001.
     - name: ticket
       type: STRICT_DNS
       dns_lookup_family: V4_ONLY
