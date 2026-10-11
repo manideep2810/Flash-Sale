@@ -2,6 +2,7 @@
 //
 //   pnpm -C tools run seed-queue-event
 //   EVENT_ID=evt-001 SALE_OPENS_IN_SEC=10 ADMIT_RATE=50 pnpm -C tools run seed-queue-event
+//   EVENT_NAME="Launch day" EVENT_PRICE=4999 pnpm -C tools run seed-queue-event
 //
 // Writes the event's config hash, lists it in queue:events (the set the admitter iterates) and
 // deletes its queue, admitted and state keys, in one MULTI.
@@ -29,6 +30,10 @@ const LOBBY_OPENS_IN_SEC = numberFromEnv("LOBBY_OPENS_IN_SEC", 0, 0);
 const SALE_OPENS_IN_SEC = numberFromEnv("SALE_OPENS_IN_SEC", 60, 0);
 const ADMIT_RATE = numberFromEnv("ADMIT_RATE", 500, 1);
 const ADMIT_TTL_SEC = numberFromEnv("ADMIT_TTL_SEC", 120, 1);
+// What the event page shows. The price is in the smallest currency unit and is display only: every
+// order is charged the order service's PAY_AMOUNT.
+const EVENT_NAME = process.env.EVENT_NAME || "Demo event";
+const EVENT_PRICE = numberFromEnv("EVENT_PRICE", 4999, 0);
 
 // Must match services/queue/src/redis/keys.ts, and availKey must match reserveKeys() in
 // services/ticket/src/redis/index.ts.
@@ -57,6 +62,8 @@ async function main(): Promise<void> {
         saleOpensAt: String(saleOpensAt),
         admitRatePerSec: String(ADMIT_RATE),
         admitTtlSec: String(Math.round(ADMIT_TTL_SEC)),
+        name: EVENT_NAME,
+        price: String(Math.round(EVENT_PRICE)),
       })
       .sadd(QUEUE_EVENTS, EVENT_ID)
       .exec();
@@ -69,7 +76,7 @@ async function main(): Promise<void> {
       }
     }
 
-    console.log(`event        ${EVENT_ID}`);
+    console.log(`event        ${EVENT_ID}  ("${EVENT_NAME}", price ${Math.round(EVENT_PRICE)})`);
     console.log(`lobby opens  ${new Date(lobbyOpensAt).toISOString()}`);
     console.log(`sale opens   ${new Date(saleOpensAt).toISOString()}  (in ${SALE_OPENS_IN_SEC}s)`);
     console.log(`admit rate   ${ADMIT_RATE}/s`);

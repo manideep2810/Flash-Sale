@@ -30,6 +30,20 @@ export function createQueueRouter({ service, authenticate }: QueueRouterOptions)
   const router = Router();
 
   /**
+   * GET /queue/:eventId/info
+   *   200 {eventId, name, price, lobbyOpensAt, saleOpensAt, admitRatePerSec, state}
+   * What the event page shows. Reads the event's config and state; it does not look at the caller's
+   * place in line, and joining is not needed to ask.
+   */
+  router.get(
+    "/queue/:eventId/info",
+    authenticate,
+    async (req: Request<EventParams>, res: Response) => {
+      res.json(await service.info(req.params.eventId));
+    },
+  );
+
+  /**
    * POST /queue/:eventId/join
    *   200 {status: "QUEUED", position, peopleAhead, estWaitSec, retryAfterMs, phase}
    *   200 {status: "ADMITTED"}   call status for the token

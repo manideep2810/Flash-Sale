@@ -44,6 +44,11 @@ export interface Reply {
   estWaitSec?: number | null;
   retryAfterMs?: number;
   phase?: string;
+  name?: string;
+  price?: number | null;
+  saleOpensAt?: number;
+  admitRatePerSec?: number;
+  eventId?: string;
   token?: string;
   expiresAt?: string;
   lobbyOpensAt?: number;
@@ -61,6 +66,9 @@ export interface SeedOptions {
   saleOpensInMs?: number;
   admitRatePerSec?: number;
   admitTtlSec?: number;
+  /** Display fields. Left out of the config hash unless given. */
+  name?: string;
+  price?: number;
   /** The Phase 2 avail counter. Null leaves the key absent. Default: plenty. */
   stock?: number | null;
 }
@@ -81,6 +89,7 @@ export interface Harness {
   seedEvent(options?: SeedOptions): Promise<SeededEvent>;
   join(eventId: string, userId?: string): Promise<HttpResult>;
   status(eventId: string, userId?: string): Promise<HttpResult>;
+  info(eventId: string, userId?: string): Promise<HttpResult>;
   /** A new admitter, as a restarted process would be: no memory of the last one. Stopped on close. */
   newAdmitter(): Admitter;
   close(): Promise<void>;
@@ -127,6 +136,7 @@ export async function createHarness(): Promise<Harness> {
     events,
     scripts,
     mintToken: createTokenMinter(ADMISSION_SECRET),
+    redis,
   });
 
   const servers: Server[] = [];
@@ -161,6 +171,8 @@ export async function createHarness(): Promise<Harness> {
       saleOpensInMs = -3_600_000,
       admitRatePerSec = 500,
       admitTtlSec = 120,
+      name,
+      price,
       stock = 1_000_000,
     } = {}) {
       const eventId = `t-${runId}-${eventIds.length}`;
@@ -173,6 +185,8 @@ export async function createHarness(): Promise<Harness> {
         saleOpensAt: String(saleOpensAt),
         admitRatePerSec: String(admitRatePerSec),
         admitTtlSec: String(admitTtlSec),
+        ...(name === undefined ? {} : { name }),
+        ...(price === undefined ? {} : { price: String(price) }),
       });
       await redis.sadd(eventsKey, eventId);
       if (stock !== null) {
@@ -183,6 +197,7 @@ export async function createHarness(): Promise<Harness> {
 
     join: (eventId, userId) => request(baseUrl, "POST", `/queue/${eventId}/join`, userId),
     status: (eventId, userId) => request(baseUrl, "GET", `/queue/${eventId}/status`, userId),
+    info: (eventId, userId) => request(baseUrl, "GET", `/queue/${eventId}/info`, userId),
 
     newAdmitter() {
       const admitter = createAdmitter({ redis, scripts, events, logger, eventsKey });

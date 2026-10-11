@@ -1,5 +1,7 @@
 import { randomInt } from "node:crypto";
 import type { EventConfig, EventConfigs } from "../config/events.js";
+import { QueueUnavailableError, type Redis } from "../redis/client.js";
+import { stateKey } from "../redis/keys.js";
 import type { Scripts } from "../redis/scripts.js";
 import { type Polling, pollingFor } from "./polling.js";
 import type { MintToken } from "./token.js";
@@ -29,6 +31,21 @@ export type StatusResponse =
   | { status: "SOLD_OUT" }
   | { status: "NOT_IN_QUEUE" };
 
+/** What the event page shows before anyone joins. */
+export interface EventInfo {
+  eventId: string;
+  name: string;
+  /** In the smallest currency unit; null when the event has none. */
+  price: number | null;
+  /** Epoch ms. */
+  lobbyOpensAt: number;
+  /** Epoch ms. */
+  saleOpensAt: number;
+  admitRatePerSec: number;
+  /** What the admitter last found: OPEN until it has run. */
+  state: "OPEN" | "PAUSED" | "SOLD_OUT";
+}
+
 export class EventNotFoundError extends Error {
   constructor(eventId: string) {
     super(`event "${eventId}" has no waiting room`);
@@ -55,6 +72,7 @@ export function drawLotteryScore(): number {
 }
 
 export interface QueueService {
+  info(eventId: string): Promise<EventInfo>;
   join(eventId: string, userId: string): Promise<JoinResponse>;
   status(eventId: string, userId: string): Promise<StatusResponse>;
 }
@@ -63,12 +81,15 @@ export interface QueueServiceOptions {
   events: EventConfigs;
   scripts: Scripts;
   mintToken: MintToken;
+  /** For info(): one GET of the event's state key. */
+  redis: Redis;
 }
 
 export function createQueueService({
   events,
   scripts,
   mintToken,
+  redis,
 }: QueueServiceOptions): QueueService {
   async function configOf(eventId: string): Promise<EventConfig> {
     const config = await events.get(eventId);
@@ -92,6 +113,26 @@ export function createQueueService({
   }
 
   return {
+    async info(eventId) {
+      const config = await configOf(eventId);
+      let state: string | null;
+      try {
+        state = await redis.get(stateKey(eventId));
+      } catch (error) {
+        throw new QueueUnavailableError(error);
+      }
+      return {
+        eventId,
+        name: config.name ?? eventId,
+        price: config.price ?? null,
+        lobbyOpensAt: config.lobbyOpensAt,
+        saleOpensAt: config.saleOpensAt,
+        admitRatePerSec: config.admitRatePerSec,
+        // The key is absent until the admitter has run for this event, as in status.lua.
+        state: state === "PAUSED" || state === "SOLD_OUT" ? state : "OPEN",
+      };
+    },
+
     async join(eventId, userId) {
       const config = await configOf(eventId);
       const now = Date.now();

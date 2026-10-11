@@ -38,6 +38,7 @@ const service = createQueueService({
   events: createEventConfigs(redis),
   scripts,
   mintToken: createTokenMinter(env.ADMISSION_SECRET),
+  redis,
 });
 
 const state: AppState = { shuttingDown: false };

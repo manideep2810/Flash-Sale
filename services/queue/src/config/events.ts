@@ -18,6 +18,10 @@ const configSchema = z.object({
   admitRatePerSec: z.coerce.number().min(1).default(DEFAULT_ADMIT_RATE_PER_SEC),
   /** How long an admitted user's turn (and the token minted for it) lasts. */
   admitTtlSec: z.coerce.number().int().min(1).default(DEFAULT_ADMIT_TTL_SEC),
+  /** What the event page calls the event. Display only; the event id stands in when it is absent. */
+  name: z.string().min(1).optional(),
+  /** In the smallest currency unit. Display only: what an order is charged is the order service's. */
+  price: z.coerce.number().int().min(0).optional(),
 });
 
 export interface EventConfig extends z.infer<typeof configSchema> {

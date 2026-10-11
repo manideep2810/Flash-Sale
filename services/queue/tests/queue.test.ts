@@ -160,6 +160,40 @@ describe.skipIf(!REDIS_URL)("queue-svc, against Redis", () => {
     expect(stranger.body).toEqual({ status: "NOT_IN_QUEUE" });
   });
 
+  it("describes an event for the event page: its name, price, times and state", async () => {
+    const { eventId, lobbyOpensAt, saleOpensAt } = await h.seedEvent({
+      saleOpensInMs: 60_000,
+      admitRatePerSec: 250,
+      name: "Launch day",
+      price: 4_999,
+    });
+
+    const info = await h.info(eventId, "anyone");
+    expect(info.status).toBe(200);
+    expect(info.body).toEqual({
+      eventId,
+      name: "Launch day",
+      price: 4_999,
+      lobbyOpensAt,
+      saleOpensAt,
+      admitRatePerSec: 250,
+      state: "OPEN",
+    });
+    // Asking is not joining.
+    expect(await h.redis.zcard(queueKey(eventId))).toBe(0);
+
+    // The state is the admitter's, read from its key.
+    await h.redis.set(`ev:${eventId}:state`, "SOLD_OUT");
+    expect((await h.info(eventId, "anyone")).body.state).toBe("SOLD_OUT");
+
+    // Without a name or a price in the config, the id stands in and there is no price.
+    const { eventId: bare } = await h.seedEvent();
+    expect((await h.info(bare, "anyone")).body).toMatchObject({ name: bare, price: null });
+
+    expect((await h.info("no-such-event", "anyone")).status).toBe(404);
+    expect((await h.info(eventId)).status).toBe(401);
+  });
+
   it("8. mints a token for an admitted user that verifies and expires with their turn", async () => {
     const { eventId } = await h.seedEvent({ admitTtlSec: 120 });
     await h.join(eventId, "u1");
