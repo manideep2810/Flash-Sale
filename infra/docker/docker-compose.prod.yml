@@ -1,0 +1,203 @@
+# Production override for a single AWS EC2 VM (t3a.large, 8 GB RAM).
+# Used as: docker compose -f docker-compose.yml -f docker-compose.prod.yml
+#
+# Published ports: 80 (envoy public), 127.0.0.1:3000 (grafana), 127.0.0.1:9090 (prometheus), 127.0.0.1:9901 (envoy admin)
+# All others internal. App services run on host via make dev.
+#
+# Compose v2.24+ required for `ports: !reset []` syntax.
+
+services:
+  postgres:
+    restart: unless-stopped
+    mem_limit: 768m
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_INITDB_ARGS: "-c shared_buffers=192MB -c max_connections=100"
+    ports: !reset []
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 10s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    restart: unless-stopped
+    mem_limit: 256m
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "192mb", "--maxmemory-policy", "noeviction"]
+    ports: !reset []
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 10s
+    volumes:
+      - redis-data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis-exporter:
+    restart: unless-stopped
+    mem_limit: 64m
+    ports: !reset []
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redpanda:
+    restart: unless-stopped
+    mem_limit: 1g
+    environment:
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
+    ports: !reset []
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 15s
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  kafka-ui:
+    restart: unless-stopped
+    mem_limit: 256m
+    ports: !reset []
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  jaeger:
+    restart: unless-stopped
+    mem_limit: 256m
+    ports: !reset []
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  prometheus:
+    restart: unless-stopped
+    mem_limit: 384m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-remote-write-receiver
+      - --enable-feature=native-histograms
+      - --storage.tsdb.retention.time=7d
+    ports: !reset ["127.0.0.1:9090:9090"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  grafana:
+    restart: unless-stopped
+    mem_limit: 256m
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    ports: !reset ["127.0.0.1:3000:3000"]
+    volumes:
+      - grafana-storage:/var/lib/grafana
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  envoy:
+    restart: unless-stopped
+    mem_limit: 256m
+    depends_on:
+      ratelimit:
+        condition: service_healthy
+    environment:
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      ADMISSION_SECRET: ${ADMISSION_SECRET:?ADMISSION_SECRET is required}
+    ports:
+      - "80:8080"
+      - "127.0.0.1:9901:9901"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9901 && printf 'GET /ready HTTP/1.1\\r\\nHost: envoy\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q LIVE <&3"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ratelimit:
+    restart: unless-stopped
+    mem_limit: 128m
+    depends_on:
+      redis-ratelimit:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis-ratelimit:
+    restart: unless-stopped
+    mem_limit: 128m
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 96mb
+      - --maxmemory-policy
+      - volatile-ttl
+    ports: !reset []
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres-data:
+  redis-data:
+  redpanda-data:
+  prometheus-data:
+  grafana-storage:
