@@ -33,29 +33,30 @@ $COMPOSE up -d
 echo "✓ Stack started"
 
 echo ""
-echo "=== Step 5: Wait for healthchecks (${WAIT_TIMEOUT}s timeout) ==="
+echo "=== Step 5: Wait for all services to be healthy (${WAIT_TIMEOUT}s timeout) ==="
 DEADLINE=$((SECONDS + WAIT_TIMEOUT))
+CRITICAL_SERVICES=("postgres" "redis" "redis-ratelimit" "redpanda" "prometheus" "ratelimit" "envoy")
 while [ $SECONDS -lt $DEADLINE ]; do
-  # Check postgres
-  if ! $COMPOSE exec -T postgres pg_isready -q -U app -d flashsale 2>/dev/null; then
-    sleep 1; continue
+  ALL_HEALTHY=1
+  for svc in "${CRITICAL_SERVICES[@]}"; do
+    STATUS=$($COMPOSE ps -q "$svc" 2>/dev/null | xargs -I {} docker inspect -f '{{.State.Health.Status}}' {} 2>/dev/null || echo "unknown")
+    if [ "$STATUS" != "healthy" ] && [ "$STATUS" != "running" ]; then
+      ALL_HEALTHY=0
+      break
+    fi
+  done
+  if [ $ALL_HEALTHY -eq 1 ]; then
+    break
   fi
-  # Check redis
-  if ! $COMPOSE exec -T redis redis-cli ping >/dev/null 2>&1; then
-    sleep 1; continue
-  fi
-  # Check redpanda
-  if ! $COMPOSE exec -T redpanda rpk cluster health 2>/dev/null | grep -q 'Healthy:.*true'; then
-    sleep 1; continue
-  fi
-  # All checks passed
-  break
+  sleep 2
 done
 if [ $SECONDS -ge $DEADLINE ]; then
-  echo "ERROR: Infrastructure healthchecks timed out (postgres, redis, or redpanda failed)" >&2
+  echo "ERROR: Service healthchecks timed out after ${WAIT_TIMEOUT}s" >&2
+  $COMPOSE ps
   exit 1
 fi
-echo "✓ All infrastructure healthy"
+echo "✓ All services healthy:"
+$COMPOSE ps --filter "status=running" --format "{{.Service}}\t{{.Status}}"
 
 echo ""
 echo "=== Step 6: Run Prisma migrations ==="
