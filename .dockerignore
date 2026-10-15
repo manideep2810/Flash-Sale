@@ -1,0 +1,19 @@
+# Build context of infra/docker/app.Dockerfile (the repo root). The image installs and builds
+# everything itself, so nothing built or installed on the host goes in, and no secret does.
+.git
+**/node_modules
+**/dist
+**/.next
+**/next-env.d.ts
+**/*.tsbuildinfo
+**/coverage
+# Prisma clients generated on the host; `pnpm install` generates them again inside the image.
+services/*/src/generated
+
+# Secrets and local settings. Compose hands the containers their environment at run time.
+**/.env
+**/.env.*
+!**/.env.example
+
+loadtest/results
+docs

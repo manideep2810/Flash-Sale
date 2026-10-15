@@ -108,6 +108,12 @@ services:
       # From infra/docker/.env (see .env.example). The same values the services run with.
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in infra/docker/.env, see .env.example}
       ADMISSION_SECRET: ${ADMISSION_SECRET:?set ADMISSION_SECRET in infra/docker/.env, see .env.example}
+      # Where envoy.yaml's clusters find the services: on the host here. docker-compose.prod.yml
+      # runs them as containers and puts their service names in instead.
+      ORDER_API_HOST: host.docker.internal
+      TICKET_HOST: host.docker.internal
+      QUEUE_HOST: host.docker.internal
+      WEB_HOST: host.docker.internal
     ports:
       - "8080:8080"             # the API
       - "127.0.0.1:9901:9901"   # admin, this machine only: its config dump shows the JWT keys

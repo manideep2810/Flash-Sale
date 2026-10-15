@@ -1,197 +1,87 @@
-# Production override for a single AWS EC2 VM (t3a.large, 8 GB RAM).
-# Used as: docker compose -f docker-compose.yml -f docker-compose.prod.yml
+# Production stack for one VM (AWS EC2 t3a.large: 2 vCPU, 8 GB). Layered on docker-compose.yml,
+# never used alone, and driven by scripts/deploy.sh:
 #
-# Published ports: 80 (envoy public), 127.0.0.1:3000 (grafana), 127.0.0.1:9090 (prometheus), 127.0.0.1:9901 (envoy admin)
-# All others internal. App services run on host via make dev.
+#   docker compose --env-file .env -f infra/docker/docker-compose.yml -f infra/docker/docker-compose.prod.yml ...
 #
-# Compose v2.24+ required for `ports: !reset []` syntax.
+# Published ports, and nothing else (check with `... config`):
+#   80                 envoy: the site and the API, the only public port
+#   127.0.0.1:3000     grafana          } this machine only: reach them over an SSH tunnel
+#   127.0.0.1:9090     prometheus       }
+#   127.0.0.1:9901     envoy admin      } (its config dump holds the JWT keys)
+#
+# Compose MERGES port lists across files, so every service that publishes in docker-compose.yml
+# says `!reset []` (publish nothing) or `!override [...]` (publish exactly this) here. Both need
+# Compose v2.24.4 or later.
+#
+# Unlike `make dev`, the app services run here as containers, all from one image
+# (infra/docker/app.Dockerfile). Envoy and Prometheus find them by service name.
+#
+# Memory: every container has a limit, about 5.9 GiB in all (docs/deploy-vm.md has the table).
+# Redis (inventory) keeps its AOF on a volume: it holds the stock, the holds, the outbox stream and
+# the waiting rooms, which must survive a restart of the VM.
+
+name: flash-sale-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# What every Node container shares. The image is built once, by order-api's `build`.
+x-app: &app
+  image: flash-sale-app:prod
+  pull_policy: never
+  # tini as PID 1: forwards SIGTERM to node and reaps the ticket service's cluster workers.
+  init: true
+  restart: unless-stopped
+  # The services drain for up to 15s on SIGTERM; don't cut that short.
+  stop_grace_period: 30s
+  logging: *logging
 
 services:
+  # ---- Infrastructure ------------------------------------------------------------------------
   postgres:
     restart: unless-stopped
     mem_limit: 768m
+    command: ["postgres", "-c", "shared_buffers=192MB", "-c", "max_connections=100"]
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      POSTGRES_INITDB_ARGS: "-c shared_buffers=192MB -c max_connections=100"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required (see .env.example)}
     ports: !reset []
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
-      start_period: 10s
     volumes:
       - postgres-data:/var/lib/postgresql/data
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d flashsale"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    logging: *logging
 
   redis:
     restart: unless-stopped
     mem_limit: 256m
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "192mb", "--maxmemory-policy", "noeviction"]
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --maxmemory
+      - 192mb
+      # Never drop a key to make room: a write fails instead, loudly.
+      - --maxmemory-policy
+      - noeviction
     ports: !reset []
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
-      timeout: 2s
-      retries: 3
-      start_period: 10s
-    volumes:
-      - redis-data:/data
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  redis-exporter:
-    restart: unless-stopped
-    mem_limit: 64m
-    ports: !reset []
-    depends_on:
-      redis:
-        condition: service_healthy
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  redpanda:
-    restart: unless-stopped
-    mem_limit: 1g
-    environment:
-      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
-    ports: !reset []
-    healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
-      start_period: 15s
-    volumes:
-      - redpanda-data:/var/lib/redpanda/data
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  kafka-ui:
-    restart: unless-stopped
-    mem_limit: 256m
-    ports: !reset []
-    depends_on:
-      redpanda:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
-      start_period: 15s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  jaeger:
-    restart: unless-stopped
-    mem_limit: 256m
-    ports: !reset []
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:16686"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
-      start_period: 10s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  prometheus:
-    restart: unless-stopped
-    mem_limit: 384m
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --web.enable-remote-write-receiver
-      - --enable-feature=native-histograms
-      - --storage.tsdb.retention.time=7d
-    ports: !reset ["127.0.0.1:9090:9090"]
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
-      start_period: 10s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  grafana:
-    restart: unless-stopped
-    mem_limit: 256m
-    depends_on:
-      prometheus:
-        condition: service_healthy
-    environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_AUTH_ANONYMOUS_ENABLED: "false"
-    ports: !reset ["127.0.0.1:3000:3000"]
-    volumes:
-      - grafana-storage:/var/lib/grafana
-      - ../grafana/provisioning:/etc/grafana/provisioning:ro
-      - ../grafana/dashboards:/var/lib/grafana/dashboards:ro
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  envoy:
-    restart: unless-stopped
-    mem_limit: 256m
-    depends_on:
-      ratelimit:
-        condition: service_started
-    environment:
-      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
-      ADMISSION_SECRET: ${ADMISSION_SECRET:?ADMISSION_SECRET is required}
-    ports:
-      - "80:8080"
-      - "127.0.0.1:9901:9901"
-    healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9901 && printf 'GET /ready HTTP/1.1\\r\\nHost: envoy\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q LIVE <&3"]
-      interval: 5s
-      timeout: 2s
-      retries: 3
-      start_period: 10s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  ratelimit:
-    restart: unless-stopped
-    mem_limit: 128m
-    depends_on:
-      redis-ratelimit:
-        condition: service_healthy
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    logging: *logging
 
   redis-ratelimit:
     restart: unless-stopped
@@ -206,22 +96,337 @@ services:
       - 96mb
       - --maxmemory-policy
       - volatile-ttl
-    ports: !reset []
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
-      timeout: 2s
-      retries: 3
-      start_period: 10s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    logging: *logging
+
+  # Redpanda speaks the Kafka protocol; it is the "kafka" of this stack. It is not a JVM, so there
+  # is no KAFKA_HEAP_OPTS: --memory caps its allocator and mem_limit the container. Only the
+  # internal listener exists, advertised as redpanda:9092.
+  redpanda:
+    restart: unless-stopped
+    mem_limit: 1g
+    command:
+      - redpanda start
+      - --mode dev-container
+      - --smp 1
+      - --memory 700M
+      - --reserve-memory 0M
+      - --kafka-addr internal://0.0.0.0:9092
+      - --advertise-kafka-addr internal://redpanda:9092
+    ports: !reset []
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    logging: *logging
+
+  redis-exporter:
+    restart: unless-stopped
+    mem_limit: 64m
+    ports: !reset []
+    logging: *logging
+
+  # Not part of the demo: no service sends traces, and the Kafka UI has no login. Start one with
+  # `--profile debug` if you need it; neither publishes a port here.
+  kafka-ui:
+    profiles: ["debug"]
+    ports: !reset []
+    mem_limit: 512m
+    logging: *logging
+
+  jaeger:
+    profiles: ["debug"]
+    ports: !reset []
+    mem_limit: 256m
+    logging: *logging
+
+  prometheus:
+    restart: unless-stopped
+    mem_limit: 384m
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports: !override ["127.0.0.1:9090:9090"]
+    volumes:
+      # Same mount point as in docker-compose.yml, so this replaces the dev scrape config.
+      - ../prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
+    logging: *logging
+
+  # 226 MiB in use two minutes after a start, measured: 256m left it next to an OOM kill.
+  grafana:
+    restart: unless-stopped
+    mem_limit: 384m
+    environment:
+      # Applied when Grafana first creates its database. To change it later, see docs/deploy-vm.md.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required (see .env.example)}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports: !override ["127.0.0.1:3000:3000"]
+    logging: *logging
+
+  envoy:
+    restart: unless-stopped
+    mem_limit: 256m
+    environment:
+      ORDER_API_HOST: order-api
+      TICKET_HOST: ticket
+      QUEUE_HOST: queue-svc
+      WEB_HOST: web
+    ports: !override
+      - "80:8080"
+      - "127.0.0.1:9901:9901"
+    logging: *logging
+
+  # The NORMAL limits (infra/ratelimit/config), as docker-compose.yml mounts them.
+  ratelimit:
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *logging
+
+  # ---- App services (one image, infra/docker/app.Dockerfile) ----------------------------------
+  # NODE_OPTIONS caps the V8 heap at about 75% of the container's limit, less where librdkafka's
+  # buffers (outside the heap) or several processes share the limit.
+
+  order-api:
+    <<: *app
+    build:
+      context: ../..
+      dockerfile: infra/docker/app.Dockerfile
+    working_dir: /app/services/order
+    command: ["node", "dist/api.js"]
+    mem_limit: 320m
+    environment:
+      # development, not production: it is what mounts POST /auth/dev-login, the demo's login
+      # (src/api.ts). The service logs a warning saying so at every start.
+      NODE_ENV: development
+      NODE_OPTIONS: --max-old-space-size=224
+      PORT: "3003"
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/flashsale?schema=order
+      KAFKA_BROKERS: redpanda:9092
+      REDIS_URL: redis://redis:6379
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3003/healthz/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  order-worker:
+    <<: *app
+    working_dir: /app/services/order
+    command: ["node", "dist/worker.js"]
+    mem_limit: 384m
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=192
+      # Required by the shared config schema; the worker listens on WORKER_PORT.
+      PORT: "3003"
+      WORKER_PORT: "3006"
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/flashsale?schema=order
+      KAFKA_BROKERS: redpanda:9092
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3006/healthz/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # A cluster primary and WORKERS workers in one container, so the heap cap is per process.
+  ticket:
+    <<: *app
+    working_dir: /app/services/ticket
+    command: ["node", "dist/index.js"]
+    mem_limit: 512m
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=128
+      PORT: "3001"
+      METRICS_PORT: "9464"
+      WORKERS: "2"
+      LOG_LEVEL: info
+      REQUIRE_ADMISSION: "true"
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/flashsale?schema=ticket
+      REDIS_URL: redis://redis:6379
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      ADMISSION_SECRET: ${ADMISSION_SECRET:?ADMISSION_SECRET is required}
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/healthz/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  queue-svc:
+    <<: *app
+    working_dir: /app/services/queue
+    command: ["node", "dist/http/server.js"]
+    mem_limit: 256m
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=192
+      PORT: "4100"
+      LOG_LEVEL: info
+      REDIS_URL: redis://redis:6379
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      ADMISSION_SECRET: ${ADMISSION_SECRET:?ADMISSION_SECRET is required}
+    depends_on:
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4100/readyz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # Exactly one: two admitters would double the admit rate (src/admitter/loop.ts).
+  queue-admitter:
+    <<: *app
+    working_dir: /app/services/queue
+    command: ["node", "dist/admitter/main.js"]
+    mem_limit: 256m
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=192
+      # Required by the shared config schema; the admitter listens on ADMITTER_PORT.
+      PORT: "4100"
+      ADMITTER_PORT: "3011"
+      LOG_LEVEL: info
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3011/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  relay:
+    <<: *app
+    working_dir: /app/services/relay
+    command: ["node", "dist/index.js"]
+    mem_limit: 256m
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=128
+      PORT: "3002"
+      LOG_LEVEL: info
+      REDIS_URL: redis://redis:6379
+      KAFKA_BROKERS: redpanda:9092
+    depends_on:
+      redis: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3002/healthz/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # FAIL_RATE is left at the mock's default (0.2): it stands in for a card being declined, which is
+  # what shows PAYMENT_FAILED in the demo. FAULT_POINT (fault injection) only acts under NODE_ENV=test.
+  payment-mock:
+    <<: *app
+    working_dir: /app/services/payment-mock
+    command: ["node", "dist/index.js"]
+    mem_limit: 320m
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=160
+      PORT: "3004"
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://app:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/flashsale?schema=payment-mock
+      KAFKA_BROKERS: redpanda:9092
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3004/healthz/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # The production build (`next build` in the image), served by `next start`.
+  web:
+    <<: *app
+    working_dir: /app/web
+    command: ["node", "node_modules/next/dist/bin/next", "start", "-p", "3012", "-H", "0.0.0.0"]
+    mem_limit: 384m
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: --max-old-space-size=288
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3012/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  # ---- One-shot jobs: run by scripts/deploy.sh with `run --rm`, never by `up` ------------------
+  migrate:
+    <<: *app
+    profiles: ["jobs"]
+    restart: "no"
+    working_dir: /app
+    mem_limit: 512m
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    # Each service migrates its own Postgres schema, named after it (as `make migrate` does).
+    command:
+      - sh
+      - -ec
+      - |
+        for svc in order ticket payment-mock; do
+          echo "==> prisma migrate deploy: $$svc"
+          cd /app/services/$$svc
+          DATABASE_URL="postgresql://app:$$POSTGRES_PASSWORD@postgres:5432/flashsale?schema=$$svc" \
+            node_modules/.bin/prisma migrate deploy
+        done
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  # The demo catalogue (tools/seed-events.ts), through the ticket service's admin API.
+  seed:
+    <<: *app
+    profiles: ["jobs"]
+    restart: "no"
+    working_dir: /app/tools
+    command: ["node_modules/.bin/tsx", "seed-events.ts"]
+    mem_limit: 512m
+    environment:
+      TICKET_URL: http://ticket:3001
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      ADMISSION_SECRET: ${ADMISSION_SECRET:?ADMISSION_SECRET is required}
+    depends_on:
+      ticket: { condition: service_healthy }
 
 volumes:
   postgres-data:
   redis-data:
   redpanda-data:
-  prometheus-data:
-  grafana-storage:

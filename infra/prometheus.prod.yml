@@ -1,0 +1,73 @@
+# Prometheus for the production stack (infra/docker/docker-compose.prod.yml), which mounts it over
+# infra/prometheus.yml. The same jobs under the same names, so the provisioned dashboards work
+# unchanged; the difference is where the targets are. In prod every service is a container on the
+# compose network, reached by its service name, and the extra load-run processes do not exist.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # The cluster primary aggregates every ticket worker's metrics on METRICS_PORT.
+  - job_name: ticket
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["ticket:9464"]
+
+  - job_name: relay
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["relay:3002"]
+
+  - job_name: order
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["order-api:3003"]
+
+  - job_name: order-worker
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["order-worker:3006"]
+
+  - job_name: payment
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["payment-mock:3004"]
+
+  - job_name: queue
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["queue-svc:4100"]
+
+  - job_name: queue-admitter
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["queue-admitter:3011"]
+
+  - job_name: envoy
+    scrape_interval: 5s
+    metrics_path: /stats/prometheus
+    static_configs:
+      - targets: ["envoy:9901"]
+
+  - job_name: ratelimit
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["ratelimit:9090"]
+
+  - job_name: redis-ratelimit
+    scrape_interval: 5s
+    metrics_path: /scrape
+    params:
+      target: ["redis://redis-ratelimit:6379"]
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  - job_name: redis
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["redis-exporter:9121"]
