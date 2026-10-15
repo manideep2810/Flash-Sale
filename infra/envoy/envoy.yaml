@@ -5,9 +5,11 @@
 # container's environment at start and runs Envoy on the result, so no secret is committed here:
 #   ${SESSION_JWK_K}, ${ADMISSION_JWK_K}   the two HS256 keys, from SESSION_SECRET and ADMISSION_SECRET
 #   ${LOCAL_*}                             the local rate-limit numbers, from limits.env
+#   ${*_HOST}                              where each service is, from the compose file
 #
-# The services run on the host (`make dev`), not in compose, so the clusters at the bottom point at
-# host.docker.internal. Each service keeps its own paths; the routes rewrite /api/... onto them.
+# In dev the services run on the host (`make dev`), so docker-compose.yml sets every *_HOST to
+# host.docker.internal; docker-compose.prod.yml runs them as containers and sets their service
+# names. Each service keeps its own paths; the routes rewrite /api/... onto them.
 # Everything that is not /api goes to the web app (web/), which makes its API calls back through here.
 #
 # What a request passes through, in order:
@@ -513,7 +515,7 @@ static_resources:
           - lb_endpoints:
               - endpoint:
                   address:
-                    socket_address: { address: host.docker.internal, port_value: 3003 }
+                    socket_address: { address: ${ORDER_API_HOST}, port_value: 3003 }
       health_checks:
         - timeout: 1s
           interval: 5s
@@ -534,7 +536,7 @@ static_resources:
           - lb_endpoints:
               - endpoint:
                   address:
-                    socket_address: { address: host.docker.internal, port_value: 3001 }
+                    socket_address: { address: ${TICKET_HOST}, port_value: 3001 }
       health_checks:
         - timeout: 1s
           interval: 5s
@@ -555,7 +557,7 @@ static_resources:
           - lb_endpoints:
               - endpoint:
                   address:
-                    socket_address: { address: host.docker.internal, port_value: 4100 }
+                    socket_address: { address: ${QUEUE_HOST}, port_value: 4100 }
       health_checks:
         - timeout: 1s
           interval: 5s
@@ -576,7 +578,7 @@ static_resources:
           - lb_endpoints:
               - endpoint:
                   address:
-                    socket_address: { address: host.docker.internal, port_value: 3012 }
+                    socket_address: { address: ${WEB_HOST}, port_value: 3012 }
       health_checks:
         - timeout: 1s
           interval: 5s

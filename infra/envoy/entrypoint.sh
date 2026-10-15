@@ -8,6 +8,7 @@
 #
 #   SESSION_SECRET, ADMISSION_SECRET   from infra/docker/.env; become the two HS256 keys
 #   LOCAL_*                            from infra/envoy/limits.env (limits.test.env under test)
+#   *_HOST                             where the services are, from the compose file
 set -eu
 
 TEMPLATE=/etc/envoy/gateway/envoy.yaml
