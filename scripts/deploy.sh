@@ -34,13 +34,27 @@ echo "✓ Stack started"
 
 echo ""
 echo "=== Step 5: Wait for healthchecks (${WAIT_TIMEOUT}s timeout) ==="
-timeout $WAIT_TIMEOUT bash -c "
-  until $COMPOSE exec -T postgres pg_isready -q -U app -d flashsale 2>/dev/null; do sleep 1; done
-  until $COMPOSE exec -T redis redis-cli ping >/dev/null 2>&1; do sleep 1; done
-  until $COMPOSE exec -T redpanda rpk cluster health 2>/dev/null | grep -q 'Healthy:.*true'; do sleep 1; done
-  until $COMPOSE exec -T ratelimit sh -c 'curl -s http://localhost:8080/healthcheck' >/dev/null 2>&1; do sleep 1; done
-  until $COMPOSE exec -T envoy sh -c 'exec 3<>/dev/tcp/127.0.0.1/9901 && printf \"GET /ready HTTP/1.1\r\nHost: envoy\r\nConnection: close\r\n\r\n\" >&3 && grep -q LIVE <&3' 2>/dev/null; do sleep 1; done
-" || { echo "ERROR: Infrastructure healthchecks timed out" >&2; exit 1; }
+DEADLINE=$((SECONDS + WAIT_TIMEOUT))
+while [ $SECONDS -lt $DEADLINE ]; do
+  # Check postgres
+  if ! $COMPOSE exec -T postgres pg_isready -q -U app -d flashsale 2>/dev/null; then
+    sleep 1; continue
+  fi
+  # Check redis
+  if ! $COMPOSE exec -T redis redis-cli ping >/dev/null 2>&1; then
+    sleep 1; continue
+  fi
+  # Check redpanda
+  if ! $COMPOSE exec -T redpanda rpk cluster health 2>/dev/null | grep -q 'Healthy:.*true'; then
+    sleep 1; continue
+  fi
+  # All checks passed
+  break
+done
+if [ $SECONDS -ge $DEADLINE ]; then
+  echo "ERROR: Infrastructure healthchecks timed out (postgres, redis, or redpanda failed)" >&2
+  exit 1
+fi
 echo "✓ All infrastructure healthy"
 
 echo ""
