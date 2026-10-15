@@ -33,15 +33,30 @@ $COMPOSE up -d
 echo "✓ Stack started"
 
 echo ""
-echo "=== Step 5: Wait for healthchecks (${WAIT_TIMEOUT}s timeout) ==="
-timeout $WAIT_TIMEOUT bash -c "
-  until $COMPOSE exec -T postgres pg_isready -q -U app -d flashsale 2>/dev/null; do sleep 1; done
-  until $COMPOSE exec -T redis redis-cli ping >/dev/null 2>&1; do sleep 1; done
-  until $COMPOSE exec -T redpanda rpk cluster health 2>/dev/null | grep -q 'Healthy:.*true'; do sleep 1; done
-  until $COMPOSE exec -T ratelimit sh -c 'curl -s http://localhost:8080/healthcheck' >/dev/null 2>&1; do sleep 1; done
-  until $COMPOSE exec -T envoy sh -c 'exec 3<>/dev/tcp/127.0.0.1/9901 && printf \"GET /ready HTTP/1.1\r\nHost: envoy\r\nConnection: close\r\n\r\n\" >&3 && grep -q LIVE <&3' 2>/dev/null; do sleep 1; done
-" || { echo "ERROR: Infrastructure healthchecks timed out" >&2; exit 1; }
-echo "✓ All infrastructure healthy"
+echo "=== Step 5: Wait for all services to be healthy (${WAIT_TIMEOUT}s timeout) ==="
+DEADLINE=$((SECONDS + WAIT_TIMEOUT))
+CRITICAL_SERVICES=("postgres" "redis" "redis-ratelimit" "redpanda" "prometheus" "ratelimit" "envoy")
+while [ $SECONDS -lt $DEADLINE ]; do
+  ALL_HEALTHY=1
+  for svc in "${CRITICAL_SERVICES[@]}"; do
+    STATUS=$($COMPOSE ps -q "$svc" 2>/dev/null | xargs -I {} docker inspect -f '{{.State.Health.Status}}' {} 2>/dev/null || echo "unknown")
+    if [ "$STATUS" != "healthy" ] && [ "$STATUS" != "running" ]; then
+      ALL_HEALTHY=0
+      break
+    fi
+  done
+  if [ $ALL_HEALTHY -eq 1 ]; then
+    break
+  fi
+  sleep 2
+done
+if [ $SECONDS -ge $DEADLINE ]; then
+  echo "ERROR: Service healthchecks timed out after ${WAIT_TIMEOUT}s" >&2
+  $COMPOSE ps
+  exit 1
+fi
+echo "✓ All services healthy:"
+$COMPOSE ps --filter "status=running" --format "{{.Service}}\t{{.Status}}"
 
 echo ""
 echo "=== Step 6: Run Prisma migrations ==="
