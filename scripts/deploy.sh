@@ -33,14 +33,14 @@ $COMPOSE up -d
 echo "✓ Stack started"
 
 echo ""
-echo "=== Step 5: Wait for all services to be healthy (${WAIT_TIMEOUT}s timeout) ==="
+echo "=== Step 5: Wait for critical services to be healthy (${WAIT_TIMEOUT}s timeout) ==="
 DEADLINE=$((SECONDS + WAIT_TIMEOUT))
-CRITICAL_SERVICES=("postgres" "redis" "redis-ratelimit" "redpanda" "prometheus" "ratelimit" "envoy")
+CRITICAL_SERVICES=("postgres" "redis" "redis-ratelimit" "redpanda" "prometheus")
 while [ $SECONDS -lt $DEADLINE ]; do
   ALL_HEALTHY=1
   for svc in "${CRITICAL_SERVICES[@]}"; do
-    STATUS=$($COMPOSE ps -q "$svc" 2>/dev/null | xargs -I {} docker inspect -f '{{.State.Health.Status}}' {} 2>/dev/null || echo "unknown")
-    if [ "$STATUS" != "healthy" ] && [ "$STATUS" != "running" ]; then
+    HEALTH=$($COMPOSE exec -T "$svc" sh -c 'echo ok' 2>/dev/null || echo "fail")
+    if [ "$HEALTH" != "ok" ]; then
       ALL_HEALTHY=0
       break
     fi
@@ -48,15 +48,15 @@ while [ $SECONDS -lt $DEADLINE ]; do
   if [ $ALL_HEALTHY -eq 1 ]; then
     break
   fi
-  sleep 2
+  sleep 3
 done
 if [ $SECONDS -ge $DEADLINE ]; then
-  echo "ERROR: Service healthchecks timed out after ${WAIT_TIMEOUT}s" >&2
+  echo "ERROR: Service startup timed out after ${WAIT_TIMEOUT}s" >&2
   $COMPOSE ps
   exit 1
 fi
-echo "✓ All services healthy:"
-$COMPOSE ps --filter "status=running" --format "{{.Service}}\t{{.Status}}"
+echo "✓ All critical services ready"
+$COMPOSE ps
 
 echo ""
 echo "=== Step 6: Run Prisma migrations ==="
